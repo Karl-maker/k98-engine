@@ -21,7 +21,7 @@ add_executable(game_engine
   src/main.cpp
   src/utils/math.cpp
   src/core/GameLoop.cpp
-  src/game/DemoGame.cpp
+  src/game/HelloWorld.cpp
 )
 
 # Tests
