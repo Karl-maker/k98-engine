@@ -1,0 +1,7 @@
+add_test([=[MathTest.AddWorks]=]  /app/build/unit_tests [==[--gtest_filter=MathTest.AddWorks]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[MathTest.AddWorks]=]  PROPERTIES WORKING_DIRECTORY /app/build SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[MathTest.AddNegative]=]  /app/build/unit_tests [==[--gtest_filter=MathTest.AddNegative]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[MathTest.AddNegative]=]  PROPERTIES WORKING_DIRECTORY /app/build SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+add_test([=[MathTest.AddPositive]=]  /app/build/unit_tests [==[--gtest_filter=MathTest.AddPositive]==] --gtest_also_run_disabled_tests)
+set_tests_properties([=[MathTest.AddPositive]=]  PROPERTIES WORKING_DIRECTORY /app/build SKIP_REGULAR_EXPRESSION [==[\[  SKIPPED \]]==])
+set(  unit_tests_TESTS MathTest.AddWorks MathTest.AddNegative MathTest.AddPositive)

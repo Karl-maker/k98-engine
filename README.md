@@ -168,6 +168,12 @@ rm -f main main.exe
 
 ---
 
-## 8. License
+## 8. Running Tests
+
+```c++
+g++ tests/unit/math_test.cpp -o test && ./test
+```
+
+## 9. License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
