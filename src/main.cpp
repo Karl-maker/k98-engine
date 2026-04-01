@@ -1,11 +1,11 @@
 #include "core/SystemClock.hpp"
-#include "game/HelloWorld.cpp"
+#include "game/PositionDemo.cpp"
 
 #include <iostream>
 
 int main()
 {
-    HelloWorld game;
+    PositionDemo game;
     SystemClock clock;
 
     GameLoopConfig config;
