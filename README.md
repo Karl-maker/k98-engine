@@ -111,7 +111,7 @@ cd /path/to/project-root
 ### macOS / Linux
 
 ```bash
-g++ -std=c++11 -o main src/main.cpp
+g++ -std=c++17 $(find src -name "*.cpp") -o main
 ```
 
 ---

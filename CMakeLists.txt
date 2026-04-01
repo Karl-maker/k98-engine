@@ -20,6 +20,8 @@ include_directories(include)
 add_executable(game_engine
   src/main.cpp
   src/utils/math.cpp
+  src/core/GameLoop.cpp
+  src/game/DemoGame.cpp
 )
 
 # Tests
