@@ -174,6 +174,19 @@ rm -f main main.exe
 g++ tests/unit/math_test.cpp -o test && ./test
 ```
 
-## 9. License
+---
+
+## 9. Build
+
+
+```bash
+cd build
+cmake ..
+make
+```
+ 
+ ---
+
+## 10. License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
