@@ -24,26 +24,40 @@ public:
         restoreTerminal();
     }
 
-    bool handleInput(Registry& registry)
+    void handleInput(Registry& registry)
     {
+        auto& sm = registry.getComponent<StateMachineComponent>(m_player).machine;
         auto& vel = registry.getComponent<Velocity>(m_player);
     
         vel.vx = 0.0f;
         vel.vz = 0.0f;
     
-        bool gotInput = false;
+        bool moving = false;
     
         char key;
         while (read(STDIN_FILENO, &key, 1) > 0)
         {
-            gotInput = true;
-    
             switch (key)
             {
-                case 'w': case 'W': vel.vz = -m_speed; break;
-                case 's': case 'S': vel.vz =  m_speed; break;
-                case 'a': case 'A': vel.vx = -m_speed; break;
-                case 'd': case 'D': vel.vx =  m_speed; break;
+                case 'w': case 'W':
+                    vel.vz = -m_speed;
+                    sm.handleEvent(StateEventType::MoveUp);
+                    break;
+
+                case 's': case 'S':
+                    vel.vz = m_speed;
+                    sm.handleEvent(StateEventType::MoveDown);
+                    break;
+
+                case 'a': case 'A':
+                    vel.vx = -m_speed;
+                    sm.handleEvent(StateEventType::MoveLeft);
+                    break;
+
+                case 'd': case 'D':
+                    vel.vx = m_speed;
+                    sm.handleEvent(StateEventType::MoveRight);
+                    break;
     
                 case 'q': case 'Q':
                     m_shouldClose = true;
@@ -51,7 +65,11 @@ public:
             }
         }
     
-        return gotInput;
+        // 🔥 if no input → send Stop
+        if (!moving)
+        {
+            sm.handleEvent(StateEventType::Stop);
+        }
     }
 
     bool shouldClose() const

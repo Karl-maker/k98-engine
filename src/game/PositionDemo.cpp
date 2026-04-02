@@ -70,8 +70,8 @@ public:
     {
         m_elapsedTime += dt;
     
-        // 🔥 Track input timing (smooths terminal input)
-        static double lastInputTime = 0.0;
+        // 🔥 Smooth input tracking (important)
+        static double lastMoveInputTime = 0.0;
         const double inputGrace = 0.15; // tweak 0.1–0.2
     
         for (auto e : m_entities)
@@ -81,29 +81,32 @@ public:
             auto& vel = m_registry.getComponent<Velocity>(e);
     
             // -------------------------
-            // PLAYER: smooth movement detection
+            // PLAYER: detect movement intent
             // -------------------------
             if (e == m_player)
             {
-                // detect raw movement this frame
                 bool hasVelocity = std::abs(vel.vx) > 0.01f || std::abs(vel.vz) > 0.01f;
     
-                // update last input time when movement detected
+                // 🔥 update last movement time ONLY when we see velocity
                 if (hasVelocity)
                 {
-                    lastInputTime = m_elapsedTime;
-                }
+                    lastMoveInputTime = m_elapsedTime;
     
-                // 🔥 apply grace period (prevents flicker)
-                bool moving = (m_elapsedTime - lastInputTime) < inputGrace;
-    
-                if (moving && sm.getCurrentState() != "Move")
-                {
-                    sm.handleEvent(StateEventType::MoveInput);
+                    // ensure we are in Moving
+                    if (sm.getCurrentState() != "Moving")
+                    {
+                        sm.handleEvent(StateEventType::MoveUp); // any move event works
+                    }
                 }
-                else if (!moving && sm.getCurrentState() != "Idle")
+                else
                 {
-                    sm.handleEvent(StateEventType::StopInput);
+                    // 🔥 only stop AFTER grace period
+                    bool shouldStop = (m_elapsedTime - lastMoveInputTime) > inputGrace;
+    
+                    if (shouldStop && sm.getCurrentState() == "Moving")
+                    {
+                        sm.handleEvent(StateEventType::Stop);
+                    }
                 }
             }
     
@@ -111,6 +114,24 @@ public:
             // UPDATE FSM
             // -------------------------
             sm.update(dt);
+    
+            // -------------------------
+            // SLOWING BEHAVIOR
+            // -------------------------
+            if (sm.getCurrentState() == "Slowing")
+            {
+                vel.vx *= 0.9f;
+                vel.vz *= 0.9f;
+    
+                if (std::abs(vel.vx) < 0.01f) vel.vx = 0.0f;
+                if (std::abs(vel.vz) < 0.01f) vel.vz = 0.0f;
+    
+                // 🔥 once fully stopped → trigger Idle
+                if (vel.vx == 0.0f && vel.vz == 0.0f)
+                {
+                    sm.handleEvent(StateEventType::Stop);
+                }
+            }
     
             // -------------------------
             // APPLY MOVEMENT
@@ -174,28 +195,113 @@ private:
         StateMachineConfig config;
         config.initialState = "Idle";
 
+        // -------------------------
+        // IDLE
+        // -------------------------
         config.states["Idle"] = {
             "Idle",
-            nullptr,
+            [](Entity){ std::cout << "Enter Idle\n"; },
             nullptr,
             nullptr,
             {
-                {StateEventType::MoveInput, "Move", nullptr}
+                {StateEventType::MoveUp,    "Moving", nullptr},
+                {StateEventType::MoveDown,  "Moving", nullptr},
+                {StateEventType::MoveLeft,  "Moving", nullptr},
+                {StateEventType::MoveRight, "Moving", nullptr}
             }
         };
 
-        config.states["Move"] = {
-            "Move",
-            nullptr,
+        // -------------------------
+        // MOVING
+        // -------------------------
+        config.states["Moving"] = {
+            "Moving",
+            [](Entity){ std::cout << "Enter Moving\n"; },
             nullptr,
             nullptr,
             {
-                {StateEventType::StopInput, "Idle", nullptr}
+                // 🔥 must be in Moving at least a short time before slowing
+                {
+                    StateEventType::Stop,
+                    "Slowing",
+                    [&](Entity e)
+                    {
+                        auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
+                
+                        // 🔥 stronger protection
+                        return sm.getTimeInState() > 0.35;
+                    }
+                },
+                {
+                    StateEventType::MoveUp,
+                    "Moving",
+                    [&](Entity e)
+                    {
+                        auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
+                        return sm.getTimeInState() > 0.1; // small buffer
+                    }
+                },
+                {
+                    StateEventType::MoveDown,
+                    "Moving",
+                    [&](Entity e)
+                    {
+                        auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
+                        return sm.getTimeInState() > 0.1; // small buffer
+                    }
+                },
+                {
+                    StateEventType::MoveLeft,
+                    "Moving",
+                    [&](Entity e)
+                    {
+                        auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
+                        return sm.getTimeInState() > 0.1; // small buffer
+                    }
+                },
+                {
+                    StateEventType::MoveRight,
+                    "Moving",
+                    [&](Entity e)
+                    {
+                        auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
+                        return sm.getTimeInState() > 0.1; // small buffer
+                    }
+                }
+            }
+        };
+
+        // -------------------------
+        // SLOWING
+        // -------------------------
+        config.states["Slowing"] = {
+            "Slowing",
+            [](Entity){ std::cout << "Enter Slowing\n"; },
+            nullptr,
+            nullptr,
+            {
+                // 🔥 allow immediate return to moving (responsive controls)
+                {StateEventType::MoveUp,    "Moving", nullptr},
+                {StateEventType::MoveDown,  "Moving", nullptr},
+                {StateEventType::MoveLeft,  "Moving", nullptr},
+                {StateEventType::MoveRight, "Moving", nullptr},
+
+                // 🔥 only go Idle after slowing for a bit
+                {
+                    StateEventType::Stop,
+                    "Idle",
+                    [&](Entity e)
+                    {
+                        auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
+                        return sm.getTimeInState() > 0.2; // deceleration time
+                    }
+                }
             }
         };
 
         m_registry.addComponent<StateMachineComponent>(e, {});
         auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
+
         sm.initialize(e, config);
     }
 

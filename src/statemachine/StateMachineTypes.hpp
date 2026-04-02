@@ -8,9 +8,12 @@
 
 enum class StateEventType
 {
-    UserDetected,
-    MoveInput,
-    StopInput
+    MoveUp,
+    MoveDown,
+    MoveLeft,
+    MoveRight,
+    Stop,
+    UserDetected
 };
 
 // Guard = optional condition
