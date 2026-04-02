@@ -2,19 +2,11 @@
 
 #include "../ecs/Registry.hpp"
 
+#include "../game/StateEventType.hpp"
+
 #include <functional>
 #include <string>
 #include <vector>
-
-enum class StateEventType
-{
-    MoveUp,
-    MoveDown,
-    MoveLeft,
-    MoveRight,
-    Stop,
-    UserDetected
-};
 
 // Guard = optional condition
 using StateGuard = std::function<bool(Entity)>;

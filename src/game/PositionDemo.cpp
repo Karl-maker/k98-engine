@@ -31,13 +31,13 @@ public:
         m_player = m_registry.createEntity();
 
         m_registry.addComponent<Position>(m_player, {0,0,0});
-        m_registry.addComponent<Velocity>(m_player, {0,0,0}); // 🔥 FIXED (was 1,0,0)
+        m_registry.addComponent<Velocity>(m_player, {0,0,0}); // 
         m_registry.addComponent<Health>(m_player, {200});
 
         setupPlayerStateMachine(m_player);
         m_entities.push_back(m_player);
 
-        // 🔥 CONTROL SYSTEM
+      
         m_control = std::make_unique<Control>(m_player, 5.0f);
 
         // -------------------------

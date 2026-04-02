@@ -1,9 +1,9 @@
 #pragma once
 
 #include "../ecs/Registry.hpp"
-#include "../statemachine/StateMachine.hpp"
-#include "../statemachine/StateMachineTypes.hpp"
 #include "../game/Components.hpp"
+#include "../game/StateEventType.hpp"
+#include "../statemachine/StateMachine.hpp"
 
 #include <cerrno>
 #include <termios.h>
