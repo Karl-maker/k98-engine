@@ -23,6 +23,7 @@ add_executable(game_engine
   src/core/GameLoop.cpp
   src/game/HelloWorld.cpp
   src/game/PositionDemo.cpp
+  src/statemachine/StateMachine.cpp
 )
 
 # Tests

@@ -6,7 +6,7 @@
 
 int main()
 {
-    HelloWorld game;
+    PositionDemo game;
     SystemClock clock;
 
     GameLoopConfig config;

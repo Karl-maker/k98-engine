@@ -1,6 +1,8 @@
 #pragma once
 
 #include "../ecs/Registry.hpp"
+#include "../statemachine/StateMachine.hpp"
+#include "../statemachine/StateMachineTypes.hpp"
 #include "../game/Components.hpp"
 
 #include <cerrno>
@@ -22,47 +24,34 @@ public:
         restoreTerminal();
     }
 
-    void handleInput(Registry& registry)
+    bool handleInput(Registry& registry)
     {
         auto& vel = registry.getComponent<Velocity>(m_player);
-
-        // Reset velocity every frame
+    
         vel.vx = 0.0f;
         vel.vz = 0.0f;
-
+    
+        bool gotInput = false;
+    
         char key;
         while (read(STDIN_FILENO, &key, 1) > 0)
         {
-            // Handle arrow keys (ESC sequences)
-            if (key == 27) // ESC
-            {
-                char seq[2];
-                if (read(STDIN_FILENO, &seq[0], 1) <= 0) continue;
-                if (read(STDIN_FILENO, &seq[1], 1) <= 0) continue;
-
-                if (seq[0] == '[')
-                {
-                    switch (seq[1])
-                    {
-                        case 'W': vel.vz = -m_speed; break; // UP
-                        case 'S': vel.vz =  m_speed; break; // DOWN
-                        case 'D': vel.vx =  m_speed; break; // RIGHT
-                        case 'A': vel.vx = -m_speed; break; // LEFT
-                    }
-                }
-                continue;
-            }
-
-            // WASD (fallback / alternative)
+            gotInput = true;
+    
             switch (key)
             {
                 case 'w': case 'W': vel.vz = -m_speed; break;
                 case 's': case 'S': vel.vz =  m_speed; break;
                 case 'a': case 'A': vel.vx = -m_speed; break;
                 case 'd': case 'D': vel.vx =  m_speed; break;
-                case 'q': case 'Q': m_shouldClose = true; break;
+    
+                case 'q': case 'Q':
+                    m_shouldClose = true;
+                    break;
             }
         }
+    
+        return gotInput;
     }
 
     bool shouldClose() const
@@ -93,7 +82,7 @@ private:
     Entity m_player;
     float m_speed;
     bool m_shouldClose = false;
-
+    double m_lastInputTime = 0.0;
     termios m_oldt{};
     int m_oldf{};
 };
