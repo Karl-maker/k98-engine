@@ -5,6 +5,7 @@
 #include "../statemachine/StateMachine.hpp"
 #include "../statemachine/StateMachineTypes.hpp"
 #include "../control/Control.hpp"
+#include "../components/StateMachineComponent.hpp"
 #include "Components.hpp"
 
 #include <iostream>

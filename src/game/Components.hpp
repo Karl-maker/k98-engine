@@ -20,8 +20,3 @@ struct Health
 {
     int hp = 100;
 };
-
-struct StateMachineComponent
-{
-    StateMachine machine;
-};

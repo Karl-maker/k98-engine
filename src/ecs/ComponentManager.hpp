@@ -49,6 +49,12 @@ public:
         return getArray<T>()->getData(entity);
     }
 
+    template<typename T>
+    bool hasComponent(Entity entity)
+    {
+        return getArray<T>()->hasData(entity);
+    }
+
 private:
     std::unordered_map<std::type_index, size_t> componentTypes;
     std::unordered_map<std::type_index, std::shared_ptr<void>> componentArrays;

@@ -2,6 +2,7 @@
 
 #include "../ecs/Registry.hpp"
 #include "../game/Components.hpp"
+#include "../components/StateMachineComponent.hpp"
 #include "../game/StateEventType.hpp"
 #include "../statemachine/StateMachine.hpp"
 

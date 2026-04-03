@@ -1,6 +1,6 @@
 #pragma once
 #include <vector>
-#include <unordered_map>
+#include <array>
 #include <cassert>
 #include "Entity.hpp"
 
@@ -10,55 +10,66 @@ class ComponentArray
 public:
     ComponentArray()
     {
-        components.reserve(MAX_ENTITIES); // prevent reallocations
+        components.reserve(MAX_ENTITIES);
+        entityToIndex.fill(INVALID_INDEX);
+        indexToEntity.fill(INVALID_ENTITY);
     }
 
     void insertData(Entity entity, const T& component)
     {
-        assert(entityToIndex.find(entity) == entityToIndex.end() && "Component added twice");
+        assert(entityToIndex[entity] == INVALID_INDEX && "Component added twice");
 
-        size_t newIndex = components.size();
+        size_t newIndex = size;
 
         entityToIndex[entity] = newIndex;
         indexToEntity[newIndex] = entity;
 
-        components.push_back(component);
+        if (newIndex >= components.size())
+            components.push_back(component);
+        else
+            components[newIndex] = component;
+
+        size++;
     }
 
     void removeData(Entity entity)
     {
-        assert(entityToIndex.find(entity) != entityToIndex.end() && "Removing non-existent component");
+        assert(entityToIndex[entity] != INVALID_INDEX && "Removing non-existent component");
 
-        size_t indexOfRemoved = entityToIndex[entity];
-        size_t indexOfLast = components.size() - 1;
+        size_t removedIndex = entityToIndex[entity];
+        size_t lastIndex = size - 1;
 
-        // Move last element into removed spot
-        components[indexOfRemoved] = components[indexOfLast];
+        components[removedIndex] = components[lastIndex];
 
-        Entity lastEntity = indexToEntity[indexOfLast];
-        entityToIndex[lastEntity] = indexOfRemoved;
-        indexToEntity[indexOfRemoved] = lastEntity;
+        Entity lastEntity = indexToEntity[lastIndex];
 
-        // Remove last
-        components.pop_back();
+        entityToIndex[lastEntity] = removedIndex;
+        indexToEntity[removedIndex] = lastEntity;
 
-        entityToIndex.erase(entity);
-        indexToEntity.erase(indexOfLast);
+        entityToIndex[entity] = INVALID_INDEX;
+        indexToEntity[lastIndex] = INVALID_ENTITY;
+
+        size--;
     }
 
     T& getData(Entity entity)
     {
-        assert(entityToIndex.find(entity) != entityToIndex.end() && "Component not found");
+        assert(entityToIndex[entity] != INVALID_INDEX && "Component not found");
         return components[entityToIndex[entity]];
     }
 
     bool hasData(Entity entity) const
     {
-        return entityToIndex.find(entity) != entityToIndex.end();
+        return entityToIndex[entity] != INVALID_INDEX;
     }
 
 private:
+    static constexpr size_t INVALID_INDEX = static_cast<size_t>(-1);
+
     std::vector<T> components;
-    std::unordered_map<Entity, size_t> entityToIndex;
-    std::unordered_map<size_t, Entity> indexToEntity;
+
+    std::array<size_t, MAX_ENTITIES> entityToIndex;
+    std::array<Entity, MAX_ENTITIES> indexToEntity;
+
+    size_t size = 0;
 };
