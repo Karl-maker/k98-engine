@@ -16,7 +16,6 @@ using StateEnterAction = std::function<void(Entity)>;
 using StateUpdateAction = std::function<void(Entity, double)>;
 using StateExitAction = std::function<void(Entity)>;
 
-// 🔥 Event-based transition
 struct EventTransition
 {
     StateEventType event;

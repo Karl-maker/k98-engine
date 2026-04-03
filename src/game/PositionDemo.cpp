@@ -70,7 +70,6 @@ public:
     {
         m_elapsedTime += dt;
     
-        // 🔥 Smooth input tracking (important)
         static double lastMoveInputTime = 0.0;
         const double inputGrace = 0.15; // tweak 0.1–0.2
     
@@ -87,7 +86,6 @@ public:
             {
                 bool hasVelocity = std::abs(vel.vx) > 0.01f || std::abs(vel.vz) > 0.01f;
     
-                // 🔥 update last movement time ONLY when we see velocity
                 if (hasVelocity)
                 {
                     lastMoveInputTime = m_elapsedTime;
@@ -100,7 +98,6 @@ public:
                 }
                 else
                 {
-                    // 🔥 only stop AFTER grace period
                     bool shouldStop = (m_elapsedTime - lastMoveInputTime) > inputGrace;
     
                     if (shouldStop && sm.getCurrentState() == "Moving")
@@ -126,7 +123,6 @@ public:
                 if (std::abs(vel.vx) < 0.01f) vel.vx = 0.0f;
                 if (std::abs(vel.vz) < 0.01f) vel.vz = 0.0f;
     
-                // 🔥 once fully stopped → trigger Idle
                 if (vel.vx == 0.0f && vel.vz == 0.0f)
                 {
                     sm.handleEvent(StateEventType::Stop);
@@ -220,7 +216,6 @@ private:
             nullptr,
             nullptr,
             {
-                // 🔥 must be in Moving at least a short time before slowing
                 {
                     StateEventType::Stop,
                     "Slowing",
@@ -228,7 +223,6 @@ private:
                     {
                         auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
                 
-                        // 🔥 stronger protection
                         return sm.getTimeInState() > 0.35;
                     }
                 },
@@ -280,13 +274,11 @@ private:
             nullptr,
             nullptr,
             {
-                // 🔥 allow immediate return to moving (responsive controls)
                 {StateEventType::MoveUp,    "Moving", nullptr},
                 {StateEventType::MoveDown,  "Moving", nullptr},
                 {StateEventType::MoveLeft,  "Moving", nullptr},
                 {StateEventType::MoveRight, "Moving", nullptr},
 
-                // 🔥 only go Idle after slowing for a bit
                 {
                     StateEventType::Stop,
                     "Idle",

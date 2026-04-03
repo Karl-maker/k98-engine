@@ -65,7 +65,6 @@ public:
             }
         }
     
-        // 🔥 if no input → send Stop
         if (!moving)
         {
             sm.handleEvent(StateEventType::Stop);

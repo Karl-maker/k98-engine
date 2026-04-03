@@ -13,7 +13,6 @@ public:
 
     void update(double dt);
 
-    // 🔥 Event-driven
     void handleEvent(StateEventType event);
 
     bool canTransitionTo(const std::string& state) const;
