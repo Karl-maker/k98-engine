@@ -60,7 +60,7 @@ public:
         m_transformSystem.update(m_registry);
         m_socketSystem.update(m_registry);
         m_attachmentSystem.update(m_registry);
-        m_cameraSystem.update(m_registry);
+        m_cameraSystem.update(m_registry, static_cast<float>(dt));
     }
 
     void onRender(double) override
@@ -135,20 +135,37 @@ private:
     void createCameraRig()
     {
         m_socket = m_registry.createEntity();
-
+    
         m_registry.addComponent(m_socket, SocketComponent{
             m_player,
-            {0.0f, 2.0f, -5.0f}, // behind and above player
+            {0.0f, 2.0f, -5.0f}, // behind player
             {},
             {}
         });
-
+    
         m_camera = m_registry.createEntity();
-
+    
         m_registry.addComponent(m_camera, TransformComponent{});
         m_registry.addComponent(m_camera, WorldTransformComponent{});
-        m_registry.addComponent(m_camera, CameraComponent{});
-
+    
+        // ----------------------------
+        // CONFIGURABLE CAMERA SETUP
+        // ----------------------------
+        CameraComponent cam;
+    
+        // KEEP OLD BEHAVIOR SAFE
+        cam.active = true;
+    
+        // ---- ENABLE FEATURES ----
+        cam.enableFollow = true;
+        cam.followLerp = 6.0f; // smoothness
+    
+        cam.enableLookAt = true;
+        cam.lookAtTarget = m_player;
+        cam.lookAtOffset = {0.0f, 1.5f, 0.0f}; // look at head
+    
+        m_registry.addComponent(m_camera, cam);
+    
         m_registry.addComponent(m_camera, AttachComponent{
             m_player,
             m_socket,
