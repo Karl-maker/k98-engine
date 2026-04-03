@@ -22,41 +22,98 @@ public:
             auto& transform = registry.getComponent<TransformComponent>(e);
 
             // =========================
-            // FOLLOW (SMOOTH)
+            // DETERMINE TARGET ENTITY
             // =========================
-            if (cam.enableFollow &&
-                registry.hasComponent<WorldTransformComponent>(e))
+            Entity targetEntity = INVALID_ENTITY;
+
+            if (cam.enableLockOn && cam.lockOnTarget != INVALID_ENTITY)
+                targetEntity = cam.lockOnTarget;
+            else if (cam.enableLookAt)
+                targetEntity = cam.lookAtTarget;
+
+            // =========================
+            // STEP 1: COMPUTE TARGET POSITION
+            // =========================
+            Vec3 targetPos = transform.position; // fallback
+
+            // ---- ORBIT MODE ----
+            if (cam.enableOrbit &&
+                targetEntity != INVALID_ENTITY &&
+                registry.hasComponent<TransformComponent>(targetEntity))
+            {
+                auto& target = registry.getComponent<TransformComponent>(targetEntity);
+
+                // update orbit angles
+                cam.orbitYaw   += cam.inputDeltaX * cam.orbitSensitivity * dt;
+                cam.orbitPitch += cam.inputDeltaY * cam.orbitSensitivity * dt;
+
+                // clamp pitch
+                if (cam.orbitPitch < cam.minPitch) cam.orbitPitch = cam.minPitch;
+                if (cam.orbitPitch > cam.maxPitch) cam.orbitPitch = cam.maxPitch;
+
+                float cosPitch = std::cos(cam.orbitPitch);
+                float sinPitch = std::sin(cam.orbitPitch);
+                float cosYaw   = std::cos(cam.orbitYaw);
+                float sinYaw   = std::sin(cam.orbitYaw);
+
+                Vec3 offset{
+                    cam.orbitDistance * cosPitch * sinYaw,
+                    cam.orbitDistance * sinPitch,
+                    cam.orbitDistance * cosPitch * cosYaw
+                };
+
+                targetPos = {
+                    target.position.x + offset.x,
+                    target.position.y + offset.y,
+                    target.position.z + offset.z
+                };
+
+                // consume input
+                cam.inputDeltaX = 0.0f;
+                cam.inputDeltaY = 0.0f;
+            }
+            // ---- FOLLOW (SOCKET/ATTACHMENT) ----
+            else if (cam.enableFollow &&
+                     registry.hasComponent<WorldTransformComponent>(e))
             {
                 auto& world = registry.getComponent<WorldTransformComponent>(e);
 
-                Vec3 targetPos{
+                targetPos = {
                     world.world.m[12],
                     world.world.m[13],
                     world.world.m[14]
                 };
+            }
 
+            // =========================
+            // STEP 2: APPLY SMOOTHING
+            // =========================
+            if (cam.enableFollow || cam.enableOrbit)
+            {
                 float t = 1.0f - std::exp(-cam.followLerp * dt);
 
                 transform.position.x += (targetPos.x - transform.position.x) * t;
                 transform.position.y += (targetPos.y - transform.position.y) * t;
                 transform.position.z += (targetPos.z - transform.position.z) * t;
             }
+            else
+            {
+                // fallback: snap (old behavior)
+                transform.position = targetPos;
+            }
 
             // =========================
-            // LOOK AT (YAW ONLY)
+            // STEP 3: LOOK AT TARGET
             // =========================
-            if (cam.enableLookAt &&
-                cam.lookAtTarget != INVALID_ENTITY &&
-                registry.hasComponent<TransformComponent>(cam.lookAtTarget))
+            if (targetEntity != INVALID_ENTITY &&
+                registry.hasComponent<TransformComponent>(targetEntity))
             {
-                auto& target = registry.getComponent<TransformComponent>(cam.lookAtTarget);
+                auto& target = registry.getComponent<TransformComponent>(targetEntity);
 
                 float dx = (target.position.x + cam.lookAtOffset.x) - transform.position.x;
                 float dz = (target.position.z + cam.lookAtOffset.z) - transform.position.z;
 
                 float yaw = std::atan2(dx, dz);
-
-                // 🔥 MANUAL QUATERNION (Y-AXIS ROTATION)
                 float halfYaw = yaw * 0.5f;
 
                 transform.rotation.x = 0.0f;
@@ -66,7 +123,7 @@ public:
             }
 
             // =========================
-            // VIEW MATRIX
+            // STEP 4: VIEW MATRIX
             // =========================
             cam.viewMatrix = Mat4::FromTR(transform.position, transform.rotation);
         }

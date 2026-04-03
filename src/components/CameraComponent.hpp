@@ -31,4 +31,31 @@ struct CameraComponent {
 
     // ---- INTERNAL / DEBUG ----
     bool debug{false};
+
+    // =========================
+    // ORBIT CONTROLS
+    // =========================
+    bool enableOrbit{false};
+
+    float orbitYaw{0.0f};
+    float orbitPitch{0.3f}; // slight downward angle
+
+    float orbitSensitivity{2.5f};
+    float orbitDistance{5.0f};
+
+    // clamp pitch (avoid flipping)
+    float minPitch{-1.2f};
+    float maxPitch{1.2f};
+
+    // =========================
+    // LOCK ON SYSTEM
+    // =========================
+    bool enableLockOn{false};
+    Entity lockOnTarget{INVALID_ENTITY};
+
+    // =========================
+    // INPUT (to be set externally)
+    // =========================
+    float inputDeltaX{0.0f};
+    float inputDeltaY{0.0f};
 };
