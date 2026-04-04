@@ -16,7 +16,7 @@ struct CollisionBoxComponent {
     // Current + previous collisions
     std::vector<Entity> touching;
     std::vector<Entity> previousTouching;
-
+    uint32_t layer{1};
     bool isStatic{false};
 };
 

@@ -2,7 +2,6 @@
 #include <unordered_map>
 #include <vector>
 #include <unordered_set>
-
 #include <cmath>
 
 #include "../math/Vec3.hpp"
@@ -35,6 +34,34 @@ class SpatialGridSystem {
 public:
     float cellSize = 5.0f;
 
+    // =========================
+    // 🔥 IMPORTANT: Needed for DDA
+    // =========================
+    GridKey getKey(const Vec3& pos) const
+    {
+        return {
+            static_cast<int>(std::floor(pos.x / cellSize)),
+            static_cast<int>(std::floor(pos.y / cellSize)),
+            static_cast<int>(std::floor(pos.z / cellSize))
+        };
+    }
+
+    // =========================
+    // Fast cell lookup (no allocation)
+    // =========================
+    const std::vector<Entity>& getCell(int x, int y, int z) const
+    {
+        static const std::vector<Entity> empty;
+
+        GridKey key{x, y, z};
+
+        auto it = cells.find(key);
+        return (it != cells.end()) ? it->second : empty;
+    }
+
+    // =========================
+    // Update grid (multi-cell AABB)
+    // =========================
     void update(Registry& registry)
     {
         cells.clear();
@@ -44,14 +71,16 @@ public:
         for (auto e : entities)
         {
             auto& box = registry.getComponent<CollisionBoxComponent>(e);
+
+            // ⚠️ Ensure bounds are valid before inserting
             insert(e, box.min, box.max);
         }
     }
 
     // =========================
-    // Query nearby entities
+    // Broad query (fallback use)
     // =========================
-    std::vector<Entity> getNearby(const Vec3& min, const Vec3& max)
+    std::vector<Entity> getNearby(const Vec3& min, const Vec3& max) const
     {
         std::unordered_set<Entity> resultSet;
 
@@ -62,14 +91,10 @@ public:
         for (int y = minKey.y; y <= maxKey.y; y++)
         for (int z = minKey.z; z <= maxKey.z; z++)
         {
-            GridKey key{x, y, z};
+            const auto& cell = getCell(x, y, z);
 
-            auto it = cells.find(key);
-            if (it != cells.end())
-            {
-                for (auto e : it->second)
-                    resultSet.insert(e);
-            }
+            for (auto e : cell)
+                resultSet.insert(e);
         }
 
         return std::vector<Entity>(resultSet.begin(), resultSet.end());
@@ -77,17 +102,6 @@ public:
 
 private:
     std::unordered_map<GridKey, std::vector<Entity>, GridKeyHash> cells;
-
-    GridKey getKey(const Vec3& pos)
-    {
-        // Floor so negative world coordinates map to correct negative cell indices
-        // (truncation toward zero would put small negatives in cell 0 and break min/max loops).
-        return {
-            static_cast<int>(std::floor(pos.x / cellSize)),
-            static_cast<int>(std::floor(pos.y / cellSize)),
-            static_cast<int>(std::floor(pos.z / cellSize))
-        };
-    }
 
     // =========================
     // MULTI-CELL INSERTION
@@ -101,8 +115,7 @@ private:
         for (int y = minKey.y; y <= maxKey.y; y++)
         for (int z = minKey.z; z <= maxKey.z; z++)
         {
-            GridKey key{x, y, z};
-            cells[key].push_back(e);
+            cells[{x, y, z}].push_back(e);
         }
     }
 };

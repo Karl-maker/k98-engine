@@ -118,8 +118,6 @@ public:
         printCollisionHeader();
         printActors();
 
-        printCameraDebug();
-
     }
 
     void onStop() override
@@ -168,6 +166,7 @@ private:
             CollisionBoxComponent box{};
             box.halfSize     = {m_collisionHalfX, m_collisionHalfY, m_collisionHalfZ};
             box.lastPosition = {0.0f, 0.0f, 0.0f};
+            box.layer        = kLayerPlayer;
             m_registry.addComponent(m_player, box);
         }
 
@@ -194,6 +193,8 @@ private:
                 CollisionBoxComponent box{};
                 box.halfSize     = {m_collisionHalfX, m_collisionHalfY, m_collisionHalfZ};
                 box.lastPosition = {startX, 0.0f, 0.0f};
+                // Bit flags: enemy slot i uses bit (i+1). Facing ray mask hits only bits 2 and 3 (enemies 2 & 3).
+                box.layer = (1u << (i + 1));
                 m_registry.addComponent(e, box);
             }
 
@@ -475,6 +476,9 @@ private:
         ray.direction    = normalize(dir);
         ray.maxDistance  = m_rayMaxDistance;
         ray.ignoreEntity = m_player;
+        // Only collide with layers for enemy "2" and "3" (bits 2 and 3); enemy "1" uses bit 1 only.
+        ray.layerMask = kFacingRayEnemyLayerMask;
+        ray.radius    = m_raySweepRadius;
     }
 
     void updateCameraInputs(double dt)
@@ -542,6 +546,8 @@ private:
                   << m_collisionHalfZ << ")  grid cell: " << m_spatialGrid.cellSize << "\n";
         std::cout << "  Player–enemy enters: " << m_playerEnemyCollisionEnters
                   << "  overlapping: " << (playerEnemyOverlap ? "yes" : "no") << "\n";
+        std::cout << "  Facing ray layers: mask 0x" << std::hex << kFacingRayEnemyLayerMask << std::dec
+                  << " (enemies 2–3 only)  sweep r=" << m_raySweepRadius << "\n";
 
         {
             const auto& rayHit = m_registry.getComponent<RaycastHitComponent>(m_facingRayEntity);
@@ -978,4 +984,12 @@ private:
     std::uint64_t m_playerEnemyCollisionEnters = 0;
 
     const float m_rayMaxDistance = 40.0f;
+    // Swept sphere radius for facing query (thick ray). 0 would be a line only.
+    const float m_raySweepRadius = 0.55f;
+
+    // Collision layers (bit flags on CollisionBoxComponent::layer). Ray.layerMask selects what can be hit.
+    static constexpr uint32_t kLayerPlayer              = 1u << 0;
+    static constexpr uint32_t kLayerEnemySlot1 = 1u << 2; // ASCII "2"
+    static constexpr uint32_t kLayerEnemySlot2 = 1u << 3; // ASCII "3"
+    static constexpr uint32_t kFacingRayEnemyLayerMask  = kLayerEnemySlot1 | kLayerEnemySlot2;
 };
