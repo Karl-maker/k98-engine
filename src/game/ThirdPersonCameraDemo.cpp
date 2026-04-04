@@ -2,7 +2,7 @@
 
 #include "../core/IGame.hpp"
 #include "../ecs/Registry.hpp"
-#include "../control/Control.hpp"
+#include "Control.hpp"
 #include "../components/StateMachineComponent.hpp"
 #include "../game/Components.hpp"
 #include "../game/StateEventType.hpp"
@@ -25,18 +25,21 @@
 #include <memory>
 #include <cmath>
 #include <string>
+#include <vector>
 
-class CameraSocketDemo final : public IGame
+class ThirdPersonCameraDemo final : public IGame
 {
 public:
     void onStart() override
     {
-        std::cout << "Camera Socket Demo Started\n";
+        std::cout << "Third Person Camera Demo Started\n";
 
         registerComponents();
         createPlayer();
         createEnemies();
         createCameraRig();
+
+        m_control = std::make_unique<Control>(m_player, m_camera, 5.0f);
     }
 
     void onInput() override
@@ -56,7 +59,7 @@ public:
         updateActors(dt);
         syncPositionToTransform();
 
-        // order matters
+        // Order matters
         m_transformSystem.update(m_registry);
         m_socketSystem.update(m_registry);
         m_attachmentSystem.update(m_registry);
@@ -69,11 +72,12 @@ public:
 
         printActors();
         printCameraDebug();
+        printInstructions();
     }
 
     void onStop() override
     {
-        std::cout << "Camera Socket Demo Stopped\n";
+        std::cout << "Third Person Camera Demo Stopped\n";
     }
 
     bool shouldClose() const override
@@ -82,6 +86,10 @@ public:
     }
 
 private:
+    // -------------------------------------------------
+    // Setup
+    // -------------------------------------------------
+
     void registerComponents()
     {
         m_registry.registerComponent<Position>();
@@ -107,8 +115,6 @@ private:
         m_registry.addComponent(m_player, WorldTransformComponent{});
 
         setupPlayerStateMachine(m_player);
-
-        m_control = std::make_unique<Control>(m_player, 5.0f);
     }
 
     void createEnemies()
@@ -116,7 +122,6 @@ private:
         for (int i = 0; i < 3; ++i)
         {
             Entity e = m_registry.createEntity();
-
             const float startX = float(i * 3 + 3);
 
             m_registry.addComponent(e, Position{startX, 0.0f, 0.0f});
@@ -129,53 +134,89 @@ private:
             t.position = {startX, 0.0f, 0.0f};
 
             setupEnemyStateMachine(e);
+            m_enemies.push_back(e);
         }
     }
 
     void createCameraRig()
     {
-        m_socket = m_registry.createEntity();
-    
-        m_registry.addComponent(m_socket, SocketComponent{
+        // Anchor/socket attached to player. This gives us a reusable follow pivot.
+        m_cameraSocket = m_registry.createEntity();
+        m_registry.addComponent(m_cameraSocket, SocketComponent{
             m_player,
-            {0.0f, 2.0f, -5.0f}, // behind player
+            {0.0f, 1.5f, 0.0f}, // pivot near upper body
             {},
             {}
         });
-    
+
+        // Camera entity
         m_camera = m_registry.createEntity();
-    
         m_registry.addComponent(m_camera, TransformComponent{});
         m_registry.addComponent(m_camera, WorldTransformComponent{});
-    
-        // ----------------------------
-        // CONFIGURABLE CAMERA SETUP
-        // ----------------------------
+
         CameraComponent cam;
-    
-        // KEEP OLD BEHAVIOR SAFE
         cam.active = true;
-    
-        // ---- ENABLE FEATURES ----
+
+        // Orbit angles use followLerp; world position uses a slight under-damped spring
+        // so the rig eases into place with a small overshoot when you strafe / move.
         cam.enableFollow = true;
-        cam.followLerp = 6.0f;
-        cam.followPositionLerp = 6.0f; // position smoothing (no orbit in this demo)
-    
+        cam.followLerp = 4.0f;
+        cam.followPositionSpring = true;
+        cam.followSpringFrequency = 3.4f;
+        cam.followSpringDampingRatio = 0.72f;
+
+        // Look-at behavior
         cam.enableLookAt = true;
         cam.lookAtTarget = m_player;
-        cam.lookAtOffset = {0.0f, 1.5f, 0.0f}; // look at head
-    
+        cam.lookAtOffset = {0.0f, 1.2f, 0.0f};
+
+        // Orbit behavior
+        cam.enableOrbit = true;
+        cam.orbitYaw = 3.1415926f; // start behind player
+        cam.orbitPitch = 0.35f;
+        cam.orbitDistance = 6.0f;
+        cam.orbitSensitivity = 2.5f;
+        cam.minPitch = -0.6f;
+        cam.maxPitch = 1.0f;
+
+        // Lock-on disabled by default
+        cam.enableLockOn = false;
+        cam.lockOnTarget = INVALID_ENTITY;
+
         m_registry.addComponent(m_camera, cam);
-    
+
+        // Start at the orbit point (CameraSystem owns position when orbit/spring is on;
+        // Attachment no longer snaps the camera to the socket each frame).
+        {
+            auto& playerPos = m_registry.getComponent<Position>(m_player);
+            auto& camTransform = m_registry.getComponent<TransformComponent>(m_camera);
+            const float yaw = cam.orbitYaw;
+            const float pitch = cam.orbitPitch;
+            const float dist = cam.orbitDistance;
+            const float cosPitch = std::cos(pitch);
+            const float sinPitch = std::sin(pitch);
+            const float cosYaw = std::cos(yaw);
+            const float sinYaw = std::sin(yaw);
+            camTransform.position.x = playerPos.x + dist * cosPitch * sinYaw;
+            camTransform.position.y = playerPos.y + dist * sinPitch;
+            camTransform.position.z = playerPos.z + dist * cosPitch * cosYaw;
+        }
+
+        // Socket rig for other consumers; inheritPosition=false so AttachmentSystem does not
+        // overwrite transform.position — CameraSystem owns the camera world position.
         m_registry.addComponent(m_camera, AttachComponent{
             m_player,
-            m_socket,
+            m_cameraSocket,
             {0.0f, 0.0f, 0.0f},
             {},
-            true,
+            false,
             true
         });
     }
+
+    // -------------------------------------------------
+    // Update
+    // -------------------------------------------------
 
     void updateActors(double dt)
     {
@@ -259,6 +300,49 @@ private:
         }
     }
 
+    void updateCameraInputs(double dt)
+    {
+        auto& cam = m_registry.getComponent<CameraComponent>(m_camera);
+
+        // Demo orbit motion: automatically rotate slowly around the player.
+        // Replace this later with actual mouse delta from browser/native input.
+        if (cam.enableOrbit && !cam.enableLockOn)
+        {
+            cam.inputDeltaX = m_demoOrbitSpeed;
+            cam.inputDeltaY = 0.0f;
+        }
+        else
+        {
+            cam.inputDeltaX = 0.0f;
+            cam.inputDeltaY = 0.0f;
+        }
+
+        // Demo lock-on behavior:
+        // every few seconds, toggle lock-on to first enemy and back off.
+        if (!m_enemies.empty())
+        {
+            const int cycle = static_cast<int>(m_elapsedTime) % 12;
+
+            if (cycle >= 6 && cycle < 10)
+            {
+                cam.enableLockOn = true;
+                cam.lockOnTarget = m_enemies[0];
+            }
+            else
+            {
+                cam.enableLockOn = false;
+                cam.lockOnTarget = INVALID_ENTITY;
+                cam.lookAtTarget = m_player;
+            }
+        }
+
+        (void)dt;
+    }
+
+    // -------------------------------------------------
+    // Render / Debug
+    // -------------------------------------------------
+
     void printActors()
     {
         std::cout << std::left
@@ -295,34 +379,51 @@ private:
 
     void printCameraDebug()
     {
+        auto& camComponent = m_registry.getComponent<CameraComponent>(m_camera);
+        auto& camTransform = m_registry.getComponent<TransformComponent>(m_camera);
+        auto& socket = m_registry.getComponent<SocketComponent>(m_cameraSocket);
         auto& playerPos = m_registry.getComponent<Position>(m_player);
-        auto& playerWorld = m_registry.getComponent<WorldTransformComponent>(m_player);
-        auto& socket = m_registry.getComponent<SocketComponent>(m_socket);
-        auto& cam = m_registry.getComponent<TransformComponent>(m_camera);
 
         std::cout << "\nPlayer Pos: "
                   << playerPos.x << ", "
                   << playerPos.y << ", "
                   << playerPos.z << "\n";
 
-        std::cout << "Player World: "
-                  << playerWorld.world.m[12] << ", "
-                  << playerWorld.world.m[13] << ", "
-                  << playerWorld.world.m[14] << "\n";
-
         std::cout << "Socket: "
                   << socket.worldTransform.m[12] << ", "
                   << socket.worldTransform.m[13] << ", "
                   << socket.worldTransform.m[14] << "\n";
 
-        std::cout << "Camera: "
-                  << cam.position.x << ", "
-                  << cam.position.y << ", "
-                  << cam.position.z << "\n";
+        std::cout << "Camera Pos: "
+                  << camTransform.position.x << ", "
+                  << camTransform.position.y << ", "
+                  << camTransform.position.z << "\n";
+
+        std::cout << "Camera Orbit Yaw/Pitch: "
+                  << camComponent.orbitYaw << " / "
+                  << camComponent.orbitPitch << "\n";
+
+        std::cout << "Camera Mode: "
+                  << (camComponent.enableLockOn ? "LockOn" : "Orbit/Follow")
+                  << "\n";
+
+        if (camComponent.enableLockOn)
+        {
+            std::cout << "Lock Target: " << camComponent.lockOnTarget << "\n";
+        }
 
         std::cout << "Time: " << m_elapsedTime << "\n";
-        std::cout << "Controls: WASD | Q quit\n";
     }
+
+    void printInstructions()
+    {
+        std::cout << "Controls: WASD move player | Q quit\n";
+        std::cout << "Demo camera: auto-orbits player, periodically locks onto first enemy\n";
+    }
+
+    // -------------------------------------------------
+    // State Machines
+    // -------------------------------------------------
 
     void setupPlayerStateMachine(Entity e)
     {
@@ -466,7 +567,9 @@ private:
 
     Entity m_player{};
     Entity m_camera{};
-    Entity m_socket{};
+    Entity m_cameraSocket{};
+
+    std::vector<Entity> m_enemies;
 
     double m_elapsedTime = 0.0;
     double m_lastMoveInputTime = 0.0;
@@ -479,4 +582,6 @@ private:
 
     const float m_slowingFactorPer60Fps = 0.92f;
     const float m_velocityDeadZone = 0.015f;
+
+    const float m_demoOrbitSpeed = 1.2f;
 };

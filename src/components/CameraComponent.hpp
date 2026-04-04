@@ -22,7 +22,14 @@ struct CameraComponent {
 
     // ---- FOLLOW ----
     bool enableFollow{false};        // default OFF (backwards compatible)
-    float followLerp{10.0f};         // smoothing strength
+    float followLerp{10.0f};         // orbit yaw/pitch smoothing (see CameraSystem)
+    float followPositionLerp{10.0f}; // exponential position smoothing (when spring off)
+
+    // Spring follow (optional): slight overshoot when dampingRatio < 1
+    bool followPositionSpring{false};
+    float followSpringFrequency{3.5f};    // Hz-ish responsiveness (higher = tighter)
+    float followSpringDampingRatio{1.0f}; // 1 = critical; <1 = bouncy overshoot; >1 = heavy
+    Vec3 followPositionVelocity{};        // internal
 
     // ---- LOOK AT ----
     bool enableLookAt{false};        // default OFF
@@ -58,4 +65,9 @@ struct CameraComponent {
     // =========================
     float inputDeltaX{0.0f};
     float inputDeltaY{0.0f};
+
+    float currentYaw{0.0f};
+    float currentPitch{0.0f};
+
+    float inputVelocityX{0.0f};
 };

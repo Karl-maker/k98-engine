@@ -1,12 +1,12 @@
 #include "core/SystemClock.hpp"
-#include "game/CameraSocketDemo.cpp"
+#include "game/ThirdPersonCameraDemo.cpp"
 #include "core/GameLoop.hpp"
 
 #include <iostream>
 
 int main()
 {
-    CameraSocketDemo game;
+    ThirdPersonCameraDemo game;
     SystemClock clock;
 
     GameLoopConfig config;

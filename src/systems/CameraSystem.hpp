@@ -8,6 +8,10 @@
 #include "../math/Quat.hpp"
 #include <cmath>
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 class CameraSystem {
 public:
     void update(Registry& registry, float dt)
@@ -43,18 +47,47 @@ public:
             {
                 auto& target = registry.getComponent<TransformComponent>(targetEntity);
 
-                // update orbit angles
-                cam.orbitYaw   += cam.inputDeltaX * cam.orbitSensitivity * dt;
-                cam.orbitPitch += cam.inputDeltaY * cam.orbitSensitivity * dt;
+                // =========================
+                // UPDATE RAW INPUT (NO dt)
+                // =========================
+                // =========================
+                // INPUT SMOOTHING (NEW)
+                // =========================
+                float inputAccel = 8.0f;
+
+                // smooth input (this is the key)
+                cam.inputVelocityX += (cam.inputDeltaX - cam.inputVelocityX) * std::clamp(inputAccel * dt, 0.0f, 1.0f);
+
+                // apply smoothed input
+                cam.orbitYaw += cam.inputVelocityX * cam.orbitSensitivity;
+                cam.orbitPitch += cam.inputDeltaY * cam.orbitSensitivity;
 
                 // clamp pitch
                 if (cam.orbitPitch < cam.minPitch) cam.orbitPitch = cam.minPitch;
                 if (cam.orbitPitch > cam.maxPitch) cam.orbitPitch = cam.maxPitch;
 
-                float cosPitch = std::cos(cam.orbitPitch);
-                float sinPitch = std::sin(cam.orbitPitch);
-                float cosYaw   = std::cos(cam.orbitYaw);
-                float sinYaw   = std::sin(cam.orbitYaw);
+                // =========================
+                // SMOOTH ROTATION (NEW)
+                // =========================
+                float tRot = std::clamp(cam.followLerp * dt, 0.0f, 1.0f);
+
+                // initialize on first frame (prevents snapping)
+                if (cam.currentYaw == 0.0f && cam.currentPitch == 0.0f)
+                {
+                    cam.currentYaw = cam.orbitYaw;
+                    cam.currentPitch = cam.orbitPitch;
+                }
+
+                cam.currentYaw   += (cam.orbitYaw   - cam.currentYaw)   * tRot;
+                cam.currentPitch += (cam.orbitPitch - cam.currentPitch) * tRot;
+
+                // =========================
+                // USE SMOOTHED VALUES
+                // =========================
+                float cosPitch = std::cos(cam.currentPitch);
+                float sinPitch = std::sin(cam.currentPitch);
+                float cosYaw   = std::cos(cam.currentYaw);
+                float sinYaw   = std::sin(cam.currentYaw);
 
                 Vec3 offset{
                     cam.orbitDistance * cosPitch * sinYaw,
@@ -86,15 +119,45 @@ public:
             }
 
             // =========================
-            // STEP 2: APPLY SMOOTHING
+            // STEP 2: APPLY POSITION FOLLOW (lerp or spring)
             // =========================
             if (cam.enableFollow || cam.enableOrbit)
             {
-                float t = 1.0f - std::exp(-cam.followLerp * dt);
+                if (cam.followPositionSpring)
+                {
+                    // Avoid spring blow-up on long frames / breakpoints
+                    const float springDt = std::min(dt, 1.0f / 30.0f);
 
-                transform.position.x += (targetPos.x - transform.position.x) * t;
-                transform.position.y += (targetPos.y - transform.position.y) * t;
-                transform.position.z += (targetPos.z - transform.position.z) * t;
+                    const float omega0 =
+                        static_cast<float>(2.0 * M_PI) * std::max(0.01f, cam.followSpringFrequency);
+                    const float zeta = std::max(0.01f, cam.followSpringDampingRatio);
+                    const float twoZetaOmega = 2.0f * zeta * omega0;
+                    const float omegaSq = omega0 * omega0;
+
+                    float ex = targetPos.x - transform.position.x;
+                    float ey = targetPos.y - transform.position.y;
+                    float ez = targetPos.z - transform.position.z;
+
+                    float ax = omegaSq * ex - twoZetaOmega * cam.followPositionVelocity.x;
+                    float ay = omegaSq * ey - twoZetaOmega * cam.followPositionVelocity.y;
+                    float az = omegaSq * ez - twoZetaOmega * cam.followPositionVelocity.z;
+
+                    cam.followPositionVelocity.x += ax * springDt;
+                    cam.followPositionVelocity.y += ay * springDt;
+                    cam.followPositionVelocity.z += az * springDt;
+
+                    transform.position.x += cam.followPositionVelocity.x * springDt;
+                    transform.position.y += cam.followPositionVelocity.y * springDt;
+                    transform.position.z += cam.followPositionVelocity.z * springDt;
+                }
+                else
+                {
+                    float t = std::clamp(cam.followPositionLerp * dt, 0.0f, 1.0f);
+
+                    transform.position.x += (targetPos.x - transform.position.x) * t;
+                    transform.position.y += (targetPos.y - transform.position.y) * t;
+                    transform.position.z += (targetPos.z - transform.position.z) * t;
+                }
             }
             else
             {
