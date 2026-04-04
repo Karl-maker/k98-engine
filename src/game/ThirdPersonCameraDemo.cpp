@@ -15,10 +15,14 @@
 #include "../components/AttachComponent.hpp"
 #include "../components/CameraComponent.hpp"
 
+#include "../components/CollisionBoxComponent.hpp"
+
 #include "../systems/TransformSystem.hpp"
 #include "../systems/SocketSystem.hpp"
 #include "../systems/AttachmentSystem.hpp"
 #include "../systems/CameraSystem.hpp"
+#include "../systems/SpacialGridSystem.hpp"
+#include "../systems/CollisionSystem.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -27,6 +31,7 @@
 #include <string>
 #include <vector>
 #include <algorithm>
+#include <cstdint>
 
 class ThirdPersonCameraDemo final : public IGame
 {
@@ -41,6 +46,31 @@ public:
         createCameraRig();
 
         m_control = std::make_unique<Control>(m_player, m_camera, 5.0f);
+
+        m_spatialGrid.cellSize = 4.0f;
+
+        m_collisionSystem.addHandler(
+            [this](const CollisionEvent& ev)
+            {
+                if (ev.type != CollisionEventType::Enter)
+                {
+                    return;
+                }
+                const bool aIsPlayer = (ev.a == m_player);
+                const bool bIsPlayer = (ev.b == m_player);
+                if (!aIsPlayer && !bIsPlayer)
+                {
+                    return;
+                }
+                const Entity other = aIsPlayer ? ev.b : ev.a;
+                if (isEnemyEntity(other))
+                {
+                    ++m_playerEnemyCollisionEnters;
+                }
+            });
+
+        syncPositionToTransform();
+        syncCollisionLastPositions();
     }
 
     void onInput() override
@@ -65,16 +95,19 @@ public:
         m_socketSystem.update(m_registry);
         m_attachmentSystem.update(m_registry);
         m_cameraSystem.update(m_registry, static_cast<float>(dt));
+
+        m_collisionSystem.update(m_registry, m_spatialGrid);
     }
 
     void onRender(double) override
     {
         std::cout << "\033[2J\033[H";
 
+        printCollisionHeader();
         printActors();
-     
+
         printCameraDebug();
-        printInstructions();
+
     }
 
     void onStop() override
@@ -104,6 +137,7 @@ private:
         m_registry.registerComponent<SocketComponent>();
         m_registry.registerComponent<AttachComponent>();
         m_registry.registerComponent<CameraComponent>();
+        m_registry.registerComponent<CollisionBoxComponent>();
     }
 
     void createPlayer()
@@ -115,6 +149,13 @@ private:
         m_registry.addComponent(m_player, Health{200});
         m_registry.addComponent(m_player, TransformComponent{});
         m_registry.addComponent(m_player, WorldTransformComponent{});
+
+        {
+            CollisionBoxComponent box{};
+            box.halfSize     = {m_collisionHalfX, m_collisionHalfY, m_collisionHalfZ};
+            box.lastPosition = {0.0f, 0.0f, 0.0f};
+            m_registry.addComponent(m_player, box);
+        }
 
         setupPlayerStateMachine(m_player);
     }
@@ -134,6 +175,13 @@ private:
 
             auto& t = m_registry.getComponent<TransformComponent>(e);
             t.position = {startX, 0.0f, 0.0f};
+
+            {
+                CollisionBoxComponent box{};
+                box.halfSize     = {m_collisionHalfX, m_collisionHalfY, m_collisionHalfZ};
+                box.lastPosition = {startX, 0.0f, 0.0f};
+                m_registry.addComponent(e, box);
+            }
 
             setupEnemyStateMachine(e);
             m_enemies.push_back(e);
@@ -313,6 +361,29 @@ private:
         }
     }
 
+    void syncCollisionLastPositions()
+    {
+        auto entities = m_registry.getEntitiesWith<CollisionBoxComponent, TransformComponent>();
+        for (auto e : entities)
+        {
+            const auto& t   = m_registry.getComponent<TransformComponent>(e).position;
+            auto&       box = m_registry.getComponent<CollisionBoxComponent>(e);
+            box.lastPosition = t;
+        }
+    }
+
+    bool isEnemyEntity(Entity e) const
+    {
+        for (Entity en : m_enemies)
+        {
+            if (en == e)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     void updateCameraInputs(double dt)
     {
         auto& cam = m_registry.getComponent<CameraComponent>(m_camera);
@@ -355,6 +426,30 @@ private:
     // -------------------------------------------------
     // Render / Debug
     // -------------------------------------------------
+
+    void printCollisionHeader()
+    {
+        bool playerEnemyOverlap = false;
+        {
+            const auto& pbox = m_registry.getComponent<CollisionBoxComponent>(m_player);
+            for (Entity other : pbox.touching)
+            {
+                if (isEnemyEntity(other))
+                {
+                    playerEnemyOverlap = true;
+                    break;
+                }
+            }
+        }
+
+        std::cout << "\033[1;36mCollision\033[0m\n";
+        std::cout << "  AABB half: ("
+                  << m_collisionHalfX << ", "
+                  << m_collisionHalfY << ", "
+                  << m_collisionHalfZ << ")  grid cell: " << m_spatialGrid.cellSize << "\n";
+        std::cout << "  Player–enemy enters: " << m_playerEnemyCollisionEnters
+                  << "  overlapping: " << (playerEnemyOverlap ? "yes" : "no") << "\n\n";
+    }
 
     void printActors()
     {
@@ -737,6 +832,8 @@ private:
     SocketSystem m_socketSystem;
     AttachmentSystem m_attachmentSystem;
     CameraSystem m_cameraSystem;
+    SpatialGridSystem m_spatialGrid;
+    CollisionSystem m_collisionSystem;
 
     Entity m_player{};
     Entity m_camera{};
@@ -760,4 +857,10 @@ private:
 
     const float m_floorY  = 0.0f;
     const float m_gravity = -28.0f;
+
+    const float m_collisionHalfX = 0.4f;
+    const float m_collisionHalfY = 0.55f;
+    const float m_collisionHalfZ = 0.4f;
+
+    std::uint64_t m_playerEnemyCollisionEnters = 0;
 };
