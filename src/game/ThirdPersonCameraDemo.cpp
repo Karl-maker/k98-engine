@@ -26,6 +26,7 @@
 #include <cmath>
 #include <string>
 #include <vector>
+#include <algorithm>
 
 class ThirdPersonCameraDemo final : public IGame
 {
@@ -175,7 +176,7 @@ private:
         cam.orbitYaw = 3.1415926f; // start behind player
         cam.orbitPitch = 0.35f;
         cam.orbitDistance = 6.0f;
-        cam.orbitSensitivity = 2.5f;
+        cam.orbitSensitivity = 1.0f;
         cam.minPitch = -0.6f;
         cam.maxPitch = 1.0f;
 
@@ -345,17 +346,18 @@ private:
 
     void printActors()
     {
-        std::cout << std::left
-                  << std::setw(8)  << "Entity"
-                  << std::setw(10) << "Type"
-                  << std::setw(12) << "State"
-                  << std::setw(10) << "Time"
-                  << std::setw(10) << "PosX"
-                  << std::setw(10) << "PosY"
-                  << std::setw(10) << "PosZ"
-                  << "\n";
+        std::cout << std::left << "Top-down XZ (rough)   Legend:  C camera   P player   1-9 enemy\n";
 
-        std::cout << "----------------------------------------------------------------\n";
+        const auto& camPos = m_registry.getComponent<TransformComponent>(m_camera).position;
+
+        struct MapPoint
+        {
+            float x;
+            float z;
+            char  sym;
+        };
+        std::vector<MapPoint> mapPoints;
+        mapPoints.push_back({camPos.x, camPos.z, 'C'});
 
         auto actors = m_registry.getEntitiesWith<Position, StateMachineComponent>();
 
@@ -366,14 +368,92 @@ private:
 
             const std::string type = (e == m_player) ? "Player" : "Enemy";
 
-            std::cout << std::setw(8)  << e
-                      << std::setw(10) << type
-                      << std::setw(12) << sm.getCurrentState()
-                      << std::setw(10) << sm.getTimeInState()
-                      << std::setw(10) << pos.x
-                      << std::setw(10) << pos.y
-                      << std::setw(10) << pos.z
-                      << "\n";
+            if (e == m_player)
+            {
+                mapPoints.push_back({pos.x, pos.z, 'P'});
+            }
+            else
+            {
+                int enemyIndex = 0;
+                for (; enemyIndex < static_cast<int>(m_enemies.size()); ++enemyIndex)
+                {
+                    if (m_enemies[static_cast<std::size_t>(enemyIndex)] == e)
+                    {
+                        break;
+                    }
+                }
+                const char sym =
+                    (enemyIndex >= 0 && enemyIndex < 9)
+                        ? static_cast<char>('1' + enemyIndex)
+                        : 'E';
+                mapPoints.push_back({pos.x, pos.z, sym});
+            }
+
+            (void)sm;
+            (void)type;
+        }
+
+        float minX = camPos.x;
+        float maxX = camPos.x;
+        float minZ = camPos.z;
+        float maxZ = camPos.z;
+        for (const MapPoint& p : mapPoints)
+        {
+            minX = std::min(minX, p.x);
+            maxX = std::max(maxX, p.x);
+            minZ = std::min(minZ, p.z);
+            maxZ = std::max(maxZ, p.z);
+        }
+        constexpr float kPad = 2.0f;
+        minX -= kPad;
+        maxX += kPad;
+        minZ -= kPad;
+        maxZ += kPad;
+        if (maxX - minX < 1.0f)
+        {
+            maxX = minX + 1.0f;
+        }
+        if (maxZ - minZ < 1.0f)
+        {
+            maxZ = minZ + 1.0f;
+        }
+
+        constexpr int kCols = 40;
+        constexpr int kRows = 12;
+        const float hx = (maxX - minX) / (2.0f * static_cast<float>(kCols));
+        const float hz = (maxZ - minZ) / (2.0f * static_cast<float>(kRows));
+        const float thresh2 = (hx * hx + hz * hz) * 6.25f;
+
+        std::cout << "  X min " << std::setw(8) << minX << "  max " << std::setw(8) << maxX
+                  << "     Z min " << std::setw(8) << minZ << "  max " << std::setw(8) << maxZ << "\n";
+
+        for (int iz = 0; iz < kRows; ++iz)
+        {
+            std::cout << "  ";
+            for (int ix = 0; ix < kCols; ++ix)
+            {
+                const float wx = minX + (static_cast<float>(ix) + 0.5f) / static_cast<float>(kCols)
+                                 * (maxX - minX);
+                const float wz =
+                    maxZ
+                    - (static_cast<float>(iz) + 0.5f) / static_cast<float>(kRows) * (maxZ - minZ);
+
+                float bestD2 = thresh2;
+                char  cell   = '.';
+                for (const MapPoint& p : mapPoints)
+                {
+                    const float dx = p.x - wx;
+                    const float dz = p.z - wz;
+                    const float d2 = dx * dx + dz * dz;
+                    if (d2 < bestD2)
+                    {
+                        bestD2 = d2;
+                        cell   = p.sym;
+                    }
+                }
+                std::cout << cell;
+            }
+            std::cout << "\n";
         }
     }
 
