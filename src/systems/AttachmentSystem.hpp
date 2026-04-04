@@ -1,5 +1,24 @@
 #pragma once
 
+// =============================================================================
+// AttachmentSystem — for entities with AttachComponent + TransformComponent,
+// copies world position from `socketEntity`’s SocketComponent.worldTransform
+// (plus offset) when inheritPosition is true; rotation from rotationOffset when
+// inheritRotation is true.
+//
+// Registration:
+//   registry.registerComponent<AttachComponent>();
+//   registry.registerComponent<TransformComponent>();
+//   SocketComponent must exist on socketEntity (registered separately).
+//
+// Example:
+//   AttachmentSystem attach;
+//   attach.update(registry);
+//
+// Order: after SocketSystem. If the attached entity has a RayComponent, run
+// FacingRaySystem after this so ray.origin matches the final transform.
+// =============================================================================
+
 #include "../ecs/Registry.hpp"
 #include "../components/AttachComponent.hpp"
 #include "../components/TransformComponent.hpp"
@@ -17,7 +36,7 @@ public:
             auto& transform = registry.getComponent<TransformComponent>(e);
 
             auto* socket = registry.tryGetComponent<SocketComponent>(attach.socketEntity);
-            if (!socket) continue; // 🚀 CRITICAL FIX
+            if (!socket) continue;
 
             if (attach.inheritPosition)
             {

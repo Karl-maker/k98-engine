@@ -3,6 +3,16 @@
 #include "../ecs/Entity.hpp"
 #include <vector>
 
+// -----------------------------------------------------------------------------
+// CollisionBoxComponent — axis-aligned box collider. `halfSize` is user-authored;
+// `min`/`max` are updated by CollisionSystem from TransformComponent.position.
+// `layer` is a bitmask; pairs must share overlapping layers to collide.
+// `lastPosition` seeds movement detection; use CollisionLastPositionSyncSystem::seed at load.
+//
+// Register: registry.registerComponent<CollisionBoxComponent>();
+// Used with: TransformComponent + CollisionSystem + SpatialGridSystem.
+// -----------------------------------------------------------------------------
+
 struct CollisionBoxComponent {
     Vec3 halfSize;
 
@@ -26,6 +36,7 @@ enum class CollisionEventType {
     Exit
 };
 
+// Fired to CollisionSystem handlers when a pair’s touching state changes.
 struct CollisionEvent {
     Entity a;
     Entity b;

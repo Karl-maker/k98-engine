@@ -18,6 +18,8 @@
 #include "../components/CollisionBoxComponent.hpp"
 #include "../components/RayComponent.hpp"
 #include "../components/RayHitComponent.hpp"
+#include "../components/GameplayTags.hpp"
+#include "../components/FacingRayDriverComponent.hpp"
 
 #include "../systems/TransformSystem.hpp"
 #include "../systems/SocketSystem.hpp"
@@ -26,15 +28,46 @@
 #include "../systems/SpacialGridSystem.hpp"
 #include "../systems/CollisionSystem.hpp"
 #include "../systems/RaycastSystem.hpp"
+#include "../systems/AnimationSystem.hpp"
+#include "../systems/BoneSyncSystem.hpp"
+#include "../systems/PositionToTransformSystem.hpp"
+#include "../systems/CollisionLastPositionSyncSystem.hpp"
+#include "../systems/FacingRaySystem.hpp"
+
+#include "../core/assets/AssetManager.hpp"
+#include "../core/assets/StreamingLoadService.hpp"
+#include "../core/assets/StreamingAssetCache.hpp"
+#include "../core/SystemUpdateGroups.hpp"
+#include "../core/ThreadService.hpp"
+#include "../core/assets/importers/GltfModelImporter.hpp"
+#include "../core/assets/AnimationClipData.hpp"
+#include "../core/assets/ModelAsset.hpp"
+#include "../math/Quat.hpp"
+#include "../math/Mat4.hpp"
+
+#include "../components/SkeletonInstanceComponent.hpp"
+#include "../components/SkeletonPoseComponent.hpp"
+#include "../components/AnimationPlaybackComponent.hpp"
+#include "../components/BoneInstanceComponent.hpp"
+#include "../components/StreamingAnchorComponent.hpp"
+#include "../components/StreamableModelComponent.hpp"
+#include "../components/SkinnedMeshComponent.hpp"
+
+#include "../rendering/OpenGLRenderSystem.hpp"
+
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 
 #include <iostream>
 #include <iomanip>
+#include <sstream>
 #include <memory>
 #include <cmath>
 #include <string>
 #include <vector>
 #include <algorithm>
 #include <cstdint>
+#include <random>
 
 class ThirdPersonCameraDemo final : public IGame
 {
@@ -43,12 +76,19 @@ public:
     {
         std::cout << "Third Person Camera Demo Started\n";
 
+        m_threadService.configure({});
+        m_threadService.start();
+
         registerComponents();
+
+        m_assetManager.registerImporter("gltf", std::make_shared<GltfModelImporter>());
+        m_assetManager.registerImporter("glb", std::make_shared<GltfModelImporter>());
+        m_streamingLoadService.setTrackedBoneNames({"hand"});
+
         createPlayer();
+        attachPlayerSkeletonAnimation();
         createEnemies();
         createCameraRig();
-
-        m_control = std::make_unique<Control>(m_player, m_camera, 5.0f);
 
         m_spatialGrid.cellSize = 4.0f;
 
@@ -72,56 +112,124 @@ public:
                 }
             });
 
-        syncPositionToTransform();
-        syncCollisionLastPositions();
+        m_positionToTransformSystem.update(m_registry);
+        m_collisionLastPositionSyncSystem.seed(m_registry);
 
         createPlayerFacingRay();
 
+        m_streamingLoadService.update(m_registry);
+        m_animationSystem.update(m_registry, 0.0f);
+        m_boneSyncSystem.update(m_registry);
         m_transformSystem.update(m_registry);
         m_socketSystem.update(m_registry);
         m_attachmentSystem.update(m_registry);
+
+        if (!m_gl.init(1280, 720, "Third Person Camera Demo"))
+        {
+            std::cerr << "OpenGL window init failed.\n";
+            m_shouldClose = true;
+            m_control = std::make_unique<Control>(m_player, m_camera, 5.0f, 9.0f, true);
+        }
+        else
+        {
+            m_control = std::make_unique<Control>(m_player, m_camera, 5.0f, 9.0f, false);
+            if (m_gl.window())
+            {
+                glfwSetInputMode(m_gl.window(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+                int ww = 0, wh = 0;
+                glfwGetWindowSize(m_gl.window(), &ww, &wh);
+                if (ww > 0 && wh > 0)
+                    glfwSetCursorPos(m_gl.window(), static_cast<double>(ww) * 0.5, static_cast<double>(wh) * 0.5);
+            }
+        }
     }
 
     void onInput() override
     {
-        m_control->handleInput(m_registry);
-
-        if (m_control->shouldClose())
+        if (m_gl.window())
         {
-            m_shouldClose = true;
+            glfwPollEvents();
+
+            GLFWwindow* w = m_gl.window();
+            InputState st{};
+            if (glfwGetKey(w, GLFW_KEY_W) == GLFW_PRESS)
+                st.moveZ -= 1.0f;
+            if (glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS)
+                st.moveZ += 1.0f;
+            // Flipped strafe vs previous (A = right, D = left).
+            if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS)
+                st.moveX += 1.0f;
+            if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS)
+                st.moveX -= 1.0f;
+            if (glfwGetKey(w, GLFW_KEY_SPACE) == GLFW_PRESS)
+                st.jumpPressed = true;
+            if (glfwGetKey(w, GLFW_KEY_ESCAPE) == GLFW_PRESS || glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS)
+            {
+                glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+                st.quit = true;
+            }
+
+            int ww = 0, wh = 0;
+            glfwGetWindowSize(w, &ww, &wh);
+            if (ww > 0 && wh > 0)
+            {
+                const double cx = static_cast<double>(ww) * 0.5;
+                const double cy = static_cast<double>(wh) * 0.5;
+                double mx = 0.0;
+                double my = 0.0;
+                glfwGetCursorPos(w, &mx, &my);
+                const float dx = static_cast<float>(mx - cx);
+                const float dy = static_cast<float>(my - cy);
+                st.mouseDeltaX = dx * m_mouseSensitivity;
+                st.mouseDeltaY = dy * m_mouseSensitivity;
+                glfwSetCursorPos(w, cx, cy);
+            }
+
+            m_control->submitInput(m_registry, st);
         }
+        else
+        {
+            m_control->handleInput(m_registry);
+        }
+
+        if (m_control->shouldClose() || m_gl.shouldClose())
+            m_shouldClose = true;
     }
 
     void onUpdate(double dt) override
     {
         m_elapsedTime += dt;
 
+        // Gameplay / state integration (runs before transforms propagate).
         updateActors(dt);
-        syncPositionToTransform();
+        m_positionToTransformSystem.update(m_registry);
 
-        // Order matters
-        m_transformSystem.update(m_registry);
-        m_socketSystem.update(m_registry);
-        m_attachmentSystem.update(m_registry);
-        m_cameraSystem.update(m_registry, static_cast<float>(dt));
+        if (m_registry.hasComponent<TransformComponent>(m_player))
+        {
+            m_streamingCache.setViewerPosition(m_registry.getComponent<TransformComponent>(m_player).position);
+        }
 
-        m_collisionSystem.update(m_registry, m_spatialGrid);
+        // Phased systems — order: Environment → Simulation → Physics (SystemUpdateGroups.hpp).
+        updateEnvironmentGroup(dt);
+        updateSimulationGroup(dt);
+        updatePhysicsGroup(dt);
 
-        updatePlayerFacingRay();
-        m_raycastSystem.update(m_registry);
+        syncEnemyAggroFromFacingRay();
     }
 
     void onRender(double) override
     {
-        std::cout << "\033[2J\033[H";
-
-        printCollisionHeader();
-        printActors();
-
+        printTerminalStatusTable();
+        m_gl.renderFrame(m_registry);
     }
 
     void onStop() override
     {
+        m_threadService.shutdown();
+
+        if (m_gl.window())
+            glfwSetInputMode(m_gl.window(), GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        m_gl.shutdown();
         std::cout << "Third Person Camera Demo Stopped\n";
     }
 
@@ -150,6 +258,18 @@ private:
         m_registry.registerComponent<CollisionBoxComponent>();
         m_registry.registerComponent<RayComponent>();
         m_registry.registerComponent<RaycastHitComponent>();
+
+        m_registry.registerComponent<SkeletonInstanceComponent>();
+        m_registry.registerComponent<SkeletonPoseComponent>();
+        m_registry.registerComponent<AnimationPlaybackComponent>();
+        m_registry.registerComponent<BoneInstanceComponent>();
+        m_registry.registerComponent<StreamingAnchorComponent>();
+        m_registry.registerComponent<StreamableModelComponent>();
+        m_registry.registerComponent<SkinnedMeshComponent>();
+
+        m_registry.registerComponent<PlayerTagComponent>();
+        m_registry.registerComponent<EnemyTagComponent>();
+        m_registry.registerComponent<FacingRayDriverComponent>();
     }
 
     void createPlayer()
@@ -171,34 +291,45 @@ private:
         }
 
         setupPlayerStateMachine(m_player);
+        m_registry.addComponent(m_player, PlayerTagComponent{});
     }
 
     void createEnemies()
     {
-        for (int i = 0; i < 3; ++i)
+        constexpr int kEnemyCount = 100;
+        constexpr int kGridSide   = 10;
+        constexpr float kSpacing  = 5.0f;
+        const float kGridOrigin = -0.5f * static_cast<float>(kGridSide - 1) * kSpacing;
+
+        m_enemyWander.resize(static_cast<std::size_t>(kEnemyCount));
+
+        for (int i = 0; i < kEnemyCount; ++i)
         {
             Entity e = m_registry.createEntity();
-            const float startX = float(i * 3 + 3);
+            const int row = i / kGridSide;
+            const int col = i % kGridSide;
+            const float startX = kGridOrigin + static_cast<float>(col) * kSpacing;
+            const float startZ = kGridOrigin + static_cast<float>(row) * kSpacing;
 
-            m_registry.addComponent(e, Position{startX, 0.0f, 0.0f});
+            m_registry.addComponent(e, Position{startX, 0.0f, startZ});
             m_registry.addComponent(e, Velocity{0.0f, 0.0f, 0.0f});
             m_registry.addComponent(e, Health{100});
             m_registry.addComponent(e, TransformComponent{});
             m_registry.addComponent(e, WorldTransformComponent{});
 
             auto& t = m_registry.getComponent<TransformComponent>(e);
-            t.position = {startX, 0.0f, 0.0f};
+            t.position = {startX, 0.0f, startZ};
 
             {
                 CollisionBoxComponent box{};
                 box.halfSize     = {m_collisionHalfX, m_collisionHalfY, m_collisionHalfZ};
-                box.lastPosition = {startX, 0.0f, 0.0f};
-                // Bit flags: enemy slot i uses bit (i+1). Facing ray mask hits only bits 2 and 3 (enemies 2 & 3).
-                box.layer = (1u << (i + 1));
+                box.lastPosition = {startX, 0.0f, startZ};
+                box.layer        = kLayerEnemyCrowd;
                 m_registry.addComponent(e, box);
             }
 
             setupEnemyStateMachine(e);
+            m_registry.addComponent(e, EnemyTagComponent{static_cast<std::uint32_t>(i)});
             m_enemies.push_back(e);
         }
     }
@@ -242,7 +373,7 @@ private:
         cam.orbitYaw = 0.0f; // +Z offset: behind player when forward is -Z (W)
         cam.orbitPitch = 0.35f;
         cam.orbitDistance = 6.0f;
-        cam.orbitSensitivity = 0.32f;
+        cam.orbitSensitivity = 0.58f;
         cam.minPitch = -0.6f;
         cam.maxPitch = 1.0f;
 
@@ -285,6 +416,34 @@ private:
     // Update
     // -------------------------------------------------
 
+    // SystemUpdateGroup::Environment — streaming anchors, proximity loads, completion → ECS spawn (main thread).
+    void updateEnvironmentGroup(double dt)
+    {
+        (void)dt;
+        m_streamingLoadService.update(m_registry);
+    }
+
+    // SystemUpdateGroup::Simulation — animation, hierarchy, camera (after Position → Transform).
+    void updateSimulationGroup(double dt)
+    {
+        const float fdt = static_cast<float>(dt);
+        m_animationSystem.update(m_registry, fdt);
+        m_boneSyncSystem.update(m_registry);
+        m_transformSystem.update(m_registry);
+        m_socketSystem.update(m_registry);
+        m_attachmentSystem.update(m_registry);
+        m_cameraSystem.update(m_registry, fdt);
+    }
+
+    // SystemUpdateGroup::Physics — collision, facing ray, raycast (after transforms and camera).
+    void updatePhysicsGroup(double dt)
+    {
+        (void)dt;
+        m_collisionSystem.update(m_registry, m_spatialGrid);
+        m_facingRaySystem.update(m_registry);
+        m_raycastSystem.update(m_registry);
+    }
+
     void updateActors(double dt)
     {
         auto actors = m_registry.getEntitiesWith<Position, Velocity, StateMachineComponent>();
@@ -302,6 +461,11 @@ private:
 
             sm.update(dt);
             applyStateBehavior(sm, vel, dt);
+
+            if (m_registry.hasComponent<EnemyTagComponent>(e) && sm.getCurrentState() != "Chase")
+            {
+                applyEnemyWander(e, vel);
+            }
 
             vel.y += m_gravity * static_cast<float>(dt);
 
@@ -363,28 +527,45 @@ private:
         }
     }
 
-    void syncPositionToTransform()
+    /// Slow random walk on XZ; uses EnemyTagComponent::slot to index wander state.
+    void applyEnemyWander(Entity e, Velocity& vel)
     {
-        auto entities = m_registry.getEntitiesWith<Position, TransformComponent>();
+        const std::uint32_t slot = m_registry.getComponent<EnemyTagComponent>(e).slot;
+        if (slot >= m_enemyWander.size())
+            return;
 
-        for (auto e : entities)
+        EnemyWanderState& w = m_enemyWander[slot];
+        auto&               pos = m_registry.getComponent<Position>(e);
+
+        std::uniform_real_distribution<double> nextGap(0.9, 3.2);
+        std::uniform_real_distribution<float>  angle(0.0f, 6.2831855f);
+
+        if (w.nextDirChangeSec < 0.0 || m_elapsedTime >= w.nextDirChangeSec)
         {
-            auto& pos = m_registry.getComponent<Position>(e);
-            auto& transform = m_registry.getComponent<TransformComponent>(e);
-
-            transform.position = {pos.x, pos.y, pos.z};
+            w.nextDirChangeSec = m_elapsedTime + nextGap(m_rng);
+            const float a = angle(m_rng);
+            w.vx = std::cos(a) * m_enemyWanderSpeed;
+            w.vz = std::sin(a) * m_enemyWanderSpeed;
         }
-    }
 
-    void syncCollisionLastPositions()
-    {
-        auto entities = m_registry.getEntitiesWith<CollisionBoxComponent, TransformComponent>();
-        for (auto e : entities)
+        // Keep the crowd near the origin so they do not drift forever.
+        if (std::abs(pos.x) > m_enemyWanderArenaHalf || std::abs(pos.z) > m_enemyWanderArenaHalf)
         {
-            const auto& t   = m_registry.getComponent<TransformComponent>(e).position;
-            auto&       box = m_registry.getComponent<CollisionBoxComponent>(e);
-            box.lastPosition = t;
+            float dx = -pos.x;
+            float dz = -pos.z;
+            const float len = std::sqrt(dx * dx + dz * dz);
+            if (len > 1e-4f)
+            {
+                dx /= len;
+                dz /= len;
+                w.vx = dx * m_enemyWanderSpeed;
+                w.vz = dz * m_enemyWanderSpeed;
+                w.nextDirChangeSec = m_elapsedTime + nextGap(m_rng);
+            }
         }
+
+        vel.x = w.vx;
+        vel.z = w.vz;
     }
 
     bool isEnemyEntity(Entity e) const
@@ -434,51 +615,14 @@ private:
         });
         m_registry.addComponent(m_facingRayEntity, RayComponent{});
         m_registry.addComponent(m_facingRayEntity, RaycastHitComponent{});
-    }
-
-    void updatePlayerFacingRay()
-    {
-        auto&       rayTf    = m_registry.getComponent<TransformComponent>(m_facingRayEntity);
-        const auto& playerTf = m_registry.getComponent<TransformComponent>(m_player);
-        rayTf.rotation       = playerTf.rotation;
-
-        auto&       camComp = m_registry.getComponent<CameraComponent>(m_camera);
-        const auto& camTf   = m_registry.getComponent<TransformComponent>(m_camera);
-
-        Entity lookTarget = m_player;
-        if (camComp.enableLockOn && camComp.lockOnTarget != INVALID_ENTITY)
-        {
-            lookTarget = camComp.lockOnTarget;
-        }
-        else if (camComp.enableLookAt && camComp.lookAtTarget != INVALID_ENTITY)
-        {
-            lookTarget = camComp.lookAtTarget;
-        }
-
-        const auto& targetTf = m_registry.getComponent<TransformComponent>(lookTarget);
-        const float dx =
-            (targetTf.position.x + camComp.lookAtOffset.x) - camTf.position.x;
-        const float dz =
-            (targetTf.position.z + camComp.lookAtOffset.z) - camTf.position.z;
-        const float hLen = std::sqrt(dx * dx + dz * dz);
-
-        Vec3 dir{0.0f, 0.0f, -1.0f};
-        if (hLen > 1.0e-5f)
-        {
-            dir.x = dx / hLen;
-            dir.y = 0.0f;
-            dir.z = dz / hLen;
-        }
-
-        auto& ray = m_registry.getComponent<RayComponent>(m_facingRayEntity);
-        // Origin from attached transform (socket on player → follows movement).
-        ray.origin       = rayTf.position;
-        ray.direction    = normalize(dir);
-        ray.maxDistance  = m_rayMaxDistance;
-        ray.ignoreEntity = m_player;
-        // Only collide with layers for enemy "2" and "3" (bits 2 and 3); enemy "1" uses bit 1 only.
-        ray.layerMask = kFacingRayEnemyLayerMask;
-        ray.radius    = m_raySweepRadius;
+        FacingRayDriverComponent facingDrv{};
+        facingDrv.cameraEntity        = m_camera;
+        facingDrv.rotationAlignEntity = m_player;
+        facingDrv.ignoreEntity        = m_player;
+        facingDrv.maxDistance         = m_rayMaxDistance;
+        facingDrv.layerMask           = kFacingRayEnemyLayerMask;
+        facingDrv.sweepRadius         = m_raySweepRadius;
+        m_registry.addComponent(m_facingRayEntity, facingDrv);
     }
 
     void updateCameraInputs(double dt)
@@ -523,6 +667,168 @@ private:
     // -------------------------------------------------
     // Render / Debug
     // -------------------------------------------------
+
+    void printTerminalStatusTable()
+    {
+        std::cout << "\033[2J\033[H";
+
+        auto entityLabel = [this](Entity e) -> std::string {
+            if (e == m_player)
+                return "Player";
+            if (e == m_camera)
+                return "Camera";
+            if (e == m_playerAnimBone)
+                return "Bone(hand)";
+            for (std::size_t i = 0; i < m_enemies.size(); ++i)
+            {
+                if (m_enemies[i] == e)
+                    return std::string("Enemy ") + std::to_string(i + 1);
+            }
+            return std::string("e") + std::to_string(static_cast<unsigned int>(e));
+        };
+
+        auto vec3Cell = [](const Vec3& p) {
+            std::ostringstream o;
+            o << std::fixed << std::setprecision(2) << p.x << ", " << p.y << ", " << p.z;
+            return o.str();
+        };
+
+        auto positionFor = [this](Entity e) -> Vec3 {
+            if (m_registry.hasComponent<Position>(e))
+            {
+                const auto& pos = m_registry.getComponent<Position>(e);
+                return {pos.x, pos.y, pos.z};
+            }
+            if (m_registry.hasComponent<TransformComponent>(e))
+                return m_registry.getComponent<TransformComponent>(e).position;
+            if (m_registry.hasComponent<WorldTransformComponent>(e))
+            {
+                const Mat4& w = m_registry.getComponent<WorldTransformComponent>(e).world;
+                return {w.m[12], w.m[13], w.m[14]};
+            }
+            return {0.0f, 0.0f, 0.0f};
+        };
+
+        auto collisionCell = [this, &entityLabel](Entity e) -> std::string {
+            if (!m_registry.hasComponent<CollisionBoxComponent>(e))
+                return "-";
+            const auto& box = m_registry.getComponent<CollisionBoxComponent>(e);
+            if (box.touching.empty())
+                return "clear";
+            std::ostringstream o;
+            o << "touch " << box.touching.size() << " [";
+            const std::size_t maxShow = 4;
+            for (std::size_t i = 0; i < box.touching.size() && i < maxShow; ++i)
+            {
+                if (i)
+                    o << ",";
+                o << entityLabel(box.touching[i]);
+            }
+            if (box.touching.size() > maxShow)
+                o << ",…";
+            o << "]";
+            return o.str();
+        };
+
+        auto stateCell = [this](Entity e) -> std::string {
+            if (!m_registry.hasComponent<StateMachineComponent>(e))
+                return "-";
+            return m_registry.getComponent<StateMachineComponent>(e).machine.getCurrentState();
+        };
+
+        const RaycastHitComponent* hitComp =
+            (m_facingRayEntity != INVALID_ENTITY && m_registry.hasComponent<RaycastHitComponent>(m_facingRayEntity))
+                ? &m_registry.getComponent<RaycastHitComponent>(m_facingRayEntity)
+                : nullptr;
+
+        auto rayHitCell = [this, hitComp, &entityLabel](Entity e) -> std::string {
+            if (!hitComp || !hitComp->hit)
+                return "-";
+            if (hitComp->entity != e)
+                return "-";
+            std::ostringstream o;
+            o << std::fixed << std::setprecision(2) << "HIT d=" << hitComp->distance;
+            return o.str();
+        };
+
+        constexpr int Wname = 16;
+        constexpr int Wpos  = 26;
+        constexpr int Wcol  = 32;
+        constexpr int Wst   = 14;
+        constexpr int Wray  = 16;
+
+        std::cout << "\033[1;36m" << std::string(110, '=') << "\033[0m\n";
+        std::cout << " ThirdPersonCameraDemo   t=" << std::fixed << std::setprecision(2) << std::setw(8)
+                  << m_elapsedTime << " s"
+                  << "   player–enemy collision enters: " << m_playerEnemyCollisionEnters << "\n";
+        std::cout << "\033[1;36m" << std::string(110, '=') << "\033[0m\n";
+
+        std::cout << " " << std::left << std::setw(Wname) << "Entity" << std::setw(Wpos) << "Position (x,y,z)"
+                  << std::setw(Wcol) << "Collision" << std::setw(Wst) << "State" << std::setw(Wray) << "Ray hit"
+                  << "\n";
+        std::cout << " " << std::string(110, '-') << "\n";
+
+        auto printRow = [&](Entity e) {
+            std::cout << " " << std::left << std::setw(Wname) << entityLabel(e) << std::setw(Wpos)
+                      << vec3Cell(positionFor(e)) << std::setw(Wcol) << collisionCell(e) << std::setw(Wst)
+                      << stateCell(e) << std::setw(Wray) << rayHitCell(e) << "\n";
+        };
+
+        printRow(m_player);
+        constexpr std::size_t kMaxEnemyRowsInTable = 14;
+        std::size_t           enemyRow = 0;
+        for (Entity en : m_enemies)
+        {
+            if (enemyRow < kMaxEnemyRowsInTable)
+                printRow(en);
+            ++enemyRow;
+        }
+        if (m_enemies.size() > kMaxEnemyRowsInTable)
+        {
+            std::cout << " " << std::left << std::setw(Wname) << ("… +" + std::to_string(m_enemies.size() - kMaxEnemyRowsInTable) + " enemies")
+                      << "\n";
+        }
+        printRow(m_camera);
+        if (m_playerAnimBone != INVALID_ENTITY)
+            printRow(m_playerAnimBone);
+
+        std::cout << " " << std::string(110, '-') << "\n";
+        std::cout << "\033[1;36mFacing ray (gameplay)\033[0m\n";
+
+        if (m_facingRayEntity != INVALID_ENTITY && m_registry.hasComponent<RayComponent>(m_facingRayEntity))
+        {
+            const auto& ray = m_registry.getComponent<RayComponent>(m_facingRayEntity);
+            const Vec3& o   = ray.origin;
+            const Vec3& d   = ray.direction;
+            std::cout << "  origin: " << std::fixed << std::setprecision(2) << o.x << ", " << o.y << ", " << o.z
+                      << "   dir: " << d.x << ", " << d.y << ", " << d.z << "\n";
+            std::cout << "  maxDist: " << ray.maxDistance << "  radius: " << ray.radius
+                      << "  layerMask: 0x" << std::hex << ray.layerMask << std::dec
+                      << "  ignore: " << entityLabel(ray.ignoreEntity) << "\n";
+        }
+
+        if (hitComp)
+        {
+            std::cout << "  result: ";
+            if (!hitComp->hit)
+            {
+                std::cout << "no hit\n";
+            }
+            else
+            {
+                const Vec3& hp = hitComp->point;
+                std::cout << "hit entity " << entityLabel(hitComp->entity) << "  dist " << std::fixed
+                          << std::setprecision(2) << hitComp->distance << "  point " << hp.x << ", " << hp.y << ", "
+                          << hp.z << "\n";
+            }
+        }
+        else
+        {
+            std::cout << "  result: (no ray component)\n";
+        }
+
+        std::cout << std::defaultfloat;
+    }
 
     void printCollisionHeader()
     {
@@ -571,8 +877,16 @@ private:
     {
         static constexpr float kPi = 3.14159265f;
 
-        std::cout << std::left
-                  << "Camera view (3D persp.)   Legend:  P player   1-9 enemy\n";
+        std::cout << std::left << "Camera view (3D persp.)   Legend:  P player   1-9 enemy";
+        if (m_playerAnimBone != INVALID_ENTITY &&
+            m_registry.hasComponent<WorldTransformComponent>(m_playerAnimBone))
+        {
+            const Mat4& w = m_registry.getComponent<WorldTransformComponent>(m_playerAnimBone).world;
+            std::cout << "   | bone(hand) T: (" << std::fixed << std::setprecision(2)
+                      << w.m[12] << ", " << w.m[13] << ", " << w.m[14] << ")"
+                      << std::defaultfloat;
+        }
+        std::cout << "\n";
 
         const auto& camComp = m_registry.getComponent<CameraComponent>(m_camera);
         const auto& camTf   = m_registry.getComponent<TransformComponent>(m_camera);
@@ -801,8 +1115,48 @@ private:
 
     void printInstructions()
     {
-        std::cout << "Controls: WASD move (camera-relative) | Space jump | Q quit\n";
-        std::cout << "Demo camera: auto-orbits player, periodically locks onto first enemy\n";
+        std::cout << "Controls: WASD (A/D strafe flipped) camera-relative | Mouse look yaw/pitch | Space jump | Esc/Q quit\n";
+    }
+
+    /// In-memory skeleton + clip on the player; one tracked bone entity for gameplay/debug.
+    void attachPlayerSkeletonAnimation()
+    {
+        auto model = std::make_shared<ModelAsset>();
+        Bone b0;
+        b0.name = "root";
+        b0.parentIndex = -1;
+        b0.restTranslation = {0.0f, 0.0f, 0.0f};
+        Bone b1;
+        b1.name = "hand";
+        b1.parentIndex = 0;
+        b1.restTranslation = {0.0f, 1.0f, 0.0f};
+        model->skeleton.bones = {b0, b1};
+        model->skeleton.boneMap["root"] = 0;
+        model->skeleton.boneMap["hand"] = 1;
+
+        AnimationClipData clip;
+        clip.name = "wave";
+        clip.durationSec = 2.0f;
+        ClipBoneChannel rotCh;
+        rotCh.boneIndex = 1;
+        rotCh.path = AnimChannelPath::Rotation;
+        rotCh.quatKeys.push_back({0.0f, quatNormalize(Quat{0.0f, 0.0f, 0.0f, 1.0f})});
+        // Y + X rotation so the hand arc is obvious in world space + full matrix debug draw.
+        rotCh.quatKeys.push_back({1.0f, quatNormalize(Quat{0.2f, 0.35f, 0.1f, 0.9f})});
+        rotCh.quatKeys.push_back({2.0f, quatNormalize(Quat{0.0f, 0.0f, 0.0f, 1.0f})});
+        clip.channels.push_back(rotCh);
+        model->clips.push_back(clip);
+
+        SkeletonInstanceComponent skel{};
+        skel.model = model;
+        skel.syncBoneIndices = {1};
+        m_registry.addComponent(m_player, std::move(skel));
+        m_registry.addComponent(m_player, SkeletonPoseComponent{});
+        m_registry.addComponent(m_player, AnimationPlaybackComponent{});
+
+        m_playerAnimBone = m_registry.createEntity();
+        m_registry.addComponent(m_playerAnimBone, BoneInstanceComponent{m_player, 1});
+        m_registry.addComponent(m_playerAnimBone, WorldTransformComponent{});
     }
 
     // -------------------------------------------------
@@ -934,9 +1288,67 @@ private:
             {}
         };
 
+        // Run toward the player each tick; entered when the facing ray hits this enemy.
+        config.states["Chase"] = {
+            "Chase",
+            nullptr,
+            [this](Entity enemy, double dt)
+            {
+                (void)dt;
+                if (!m_registry.hasComponent<Velocity>(enemy) || !m_registry.hasComponent<Position>(enemy))
+                    return;
+                if (!m_registry.hasComponent<Position>(m_player))
+                    return;
+
+                auto&       vel = m_registry.getComponent<Velocity>(enemy);
+                const auto& pos = m_registry.getComponent<Position>(enemy);
+                const auto& ppos = m_registry.getComponent<Position>(m_player);
+
+                float dx = ppos.x - pos.x;
+                float dz = ppos.z - pos.z;
+                const float lenSq = dx * dx + dz * dz;
+                if (lenSq > 0.02f)
+                {
+                    const float inv = 1.0f / std::sqrt(lenSq);
+                    dx *= inv;
+                    dz *= inv;
+                    vel.x = dx * m_chaseSpeed;
+                    vel.z = dz * m_chaseSpeed;
+                }
+                else
+                {
+                    vel.x = 0.0f;
+                    vel.z = 0.0f;
+                }
+            },
+            nullptr,
+            {}
+        };
+
         m_registry.addComponent(e, StateMachineComponent{});
         auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
         sm.initialize(e, config);
+    }
+
+    /// If the gameplay facing ray hits an enemy, they transition to Chase.
+    void syncEnemyAggroFromFacingRay()
+    {
+        if (m_facingRayEntity == INVALID_ENTITY || !m_registry.hasComponent<RaycastHitComponent>(m_facingRayEntity))
+            return;
+
+        const auto& hit = m_registry.getComponent<RaycastHitComponent>(m_facingRayEntity);
+        if (!hit.hit || hit.entity == INVALID_ENTITY)
+            return;
+        if (!isEnemyEntity(hit.entity))
+            return;
+        if (!m_registry.hasComponent<StateMachineComponent>(hit.entity))
+            return;
+
+        auto& sm = m_registry.getComponent<StateMachineComponent>(hit.entity).machine;
+        if (sm.getCurrentState() == "Chase")
+            return;
+
+        sm.forceTransitionTo("Chase");
     }
 
 private:
@@ -944,7 +1356,17 @@ private:
 
     std::unique_ptr<Control> m_control;
 
+    AssetManager m_assetManager;
+    ThreadService m_threadService;
+    StreamingLoadService m_streamingLoadService{m_assetManager, &m_threadService};
+    StreamingAssetCache m_streamingCache{m_assetManager};
+
     TransformSystem m_transformSystem;
+    PositionToTransformSystem       m_positionToTransformSystem;
+    CollisionLastPositionSyncSystem m_collisionLastPositionSyncSystem;
+    FacingRaySystem                 m_facingRaySystem;
+    AnimationSystem m_animationSystem;
+    BoneSyncSystem m_boneSyncSystem;
     SocketSystem m_socketSystem;
     AttachmentSystem m_attachmentSystem;
     CameraSystem m_cameraSystem;
@@ -953,12 +1375,22 @@ private:
     CollisionSystem   m_collisionSystem;
 
     Entity m_player{};
+    /// Bone index 1 ("hand") driven by in-memory clip on `m_player`.
+    Entity m_playerAnimBone{INVALID_ENTITY};
     Entity m_camera{};
     Entity m_cameraSocket{};
     Entity m_playerRaySocket{INVALID_ENTITY};
     Entity m_facingRayEntity{INVALID_ENTITY};
 
     std::vector<Entity> m_enemies;
+
+    struct EnemyWanderState {
+        double nextDirChangeSec = -1.0;
+        float  vx               = 0.0f;
+        float  vz               = 0.0f;
+    };
+    std::vector<EnemyWanderState> m_enemyWander;
+    std::mt19937                    m_rng{std::random_device{}()};
 
     double m_elapsedTime = 0.0;
     double m_lastMoveInputTime = 0.0;
@@ -977,19 +1409,31 @@ private:
     const float m_floorY  = 0.0f;
     const float m_gravity = -28.0f;
 
+    /// Horizontal speed for enemy random walk (units / second).
+    const float m_enemyWanderSpeed     = 0.42f;
+    const float m_enemyWanderArenaHalf = 32.0f;
+
+    /// Run speed when an enemy is chasing the player (units / second).
+    const float m_chaseSpeed = 3.2f;
+
     const float m_collisionHalfX = 0.4f;
     const float m_collisionHalfY = 0.55f;
     const float m_collisionHalfZ = 0.4f;
 
     std::uint64_t m_playerEnemyCollisionEnters = 0;
 
+    /// Mouse delta → orbit input (used with centered cursor; window-coordinate deltas).
+    float m_mouseSensitivity = 0.0048f;
+
+    OpenGLRenderSystem m_gl;
+
     const float m_rayMaxDistance = 40.0f;
     // Swept sphere radius for facing query (thick ray). 0 would be a line only.
     const float m_raySweepRadius = 0.55f;
 
     // Collision layers (bit flags on CollisionBoxComponent::layer). Ray.layerMask selects what can be hit.
-    static constexpr uint32_t kLayerPlayer              = 1u << 0;
-    static constexpr uint32_t kLayerEnemySlot1 = 1u << 2; // ASCII "2"
-    static constexpr uint32_t kLayerEnemySlot2 = 1u << 3; // ASCII "3"
-    static constexpr uint32_t kFacingRayEnemyLayerMask  = kLayerEnemySlot1 | kLayerEnemySlot2;
+    static constexpr uint32_t kLayerPlayer           = 1u << 0;
+    /// Shared by all crowd enemies so facing ray can hit any of them without per-entity bits.
+    static constexpr uint32_t kLayerEnemyCrowd       = 1u << 1;
+    static constexpr uint32_t kFacingRayEnemyLayerMask = kLayerEnemyCrowd;
 };

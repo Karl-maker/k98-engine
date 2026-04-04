@@ -28,6 +28,14 @@ inline Vec3 operator*(const Vec3& v, float s) {
     return {v.x * s, v.y * s, v.z * s};
 }
 
+inline Vec3 operator*(float s, const Vec3& v) {
+    return v * s;
+}
+
+inline Vec3 lerp(const Vec3& a, const Vec3& b, float t) {
+    return a * (1.0f - t) + b * t;
+}
+
 inline Vec3 normalize(const Vec3& v)
 {
     float lenSq = lengthSquared(v);
@@ -39,4 +47,12 @@ inline Vec3 normalize(const Vec3& v)
     float invLen = 1.0f / std::sqrt(lenSq);
 
     return v * invLen;
+}
+
+inline Vec3 cross(const Vec3& a, const Vec3& b)
+{
+    return {
+        a.y * b.z - a.z * b.y,
+        a.z * b.x - a.x * b.z,
+        a.x * b.y - a.y * b.x};
 }

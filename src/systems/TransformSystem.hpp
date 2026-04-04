@@ -1,5 +1,20 @@
 #pragma once
 
+// =============================================================================
+// TransformSystem — writes WorldTransformComponent.world from TransformComponent
+// (translation only in this implementation: root + parent chain offset).
+//
+// Registration:
+//   registry.registerComponent<TransformComponent>();
+//   registry.registerComponent<WorldTransformComponent>();
+//
+// Example:
+//   TransformSystem sys;
+//   sys.update(registry);
+//
+// Typical order: after PositionToTransformSystem, before SocketSystem.
+// =============================================================================
+
 #include "../ecs/Registry.hpp"
 #include "../components/TransformComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"

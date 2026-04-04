@@ -3,6 +3,13 @@
 #include "../math/Vec3.hpp"
 #include "../ecs/Entity.hpp"
 
+// -----------------------------------------------------------------------------
+// CameraComponent — lens + behavior flags for CameraSystem. `viewMatrix` is the
+// camera *world* matrix (inverse ≈ view). Feed `inputDeltaX/Y` from input each frame.
+//
+// Register: registry.registerComponent<CameraComponent>();
+// -----------------------------------------------------------------------------
+
 struct CameraComponent {
     // =========================
     // EXISTING (UNCHANGED)

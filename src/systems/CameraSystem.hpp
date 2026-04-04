@@ -1,5 +1,21 @@
 #pragma once
 
+// =============================================================================
+// CameraSystem — updates camera TransformComponent from orbit / follow / look-at
+// and writes CameraComponent::viewMatrix (camera *world* matrix, inverse = view).
+//
+// Registration:
+//   registry.registerComponent<CameraComponent>();
+//   registry.registerComponent<TransformComponent>();
+//   optional: WorldTransformComponent for follow-from-socket mode
+//
+// Example:
+//   CameraSystem cams;
+//   cams.update(registry, dt);
+//
+// Feed input via CameraComponent::inputDeltaX/Y (e.g. from Control / mouse).
+// =============================================================================
+
 #include "../ecs/Registry.hpp"
 #include "../components/CameraComponent.hpp"
 #include "../components/TransformComponent.hpp"
@@ -53,7 +69,7 @@ public:
                 // =========================
                 // INPUT SMOOTHING (NEW)
                 // =========================
-                float inputAccel = 4.0f;
+                float inputAccel = 6.5f;
 
                 // smooth input (this is the key)
                 cam.inputVelocityX += (cam.inputDeltaX - cam.inputVelocityX) * std::clamp(inputAccel * dt, 0.0f, 1.0f);

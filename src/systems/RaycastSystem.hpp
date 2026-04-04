@@ -1,5 +1,27 @@
 #pragma once
 
+// =============================================================================
+// RaycastSystem — tests RayComponent (+ optional sweep radius) against dynamic
+// AABBs in SpatialGridSystem; writes RaycastHitComponent (closest hit).
+//
+// Registration:
+//   registry.registerComponent<RayComponent>();
+//   registry.registerComponent<RaycastHitComponent>();
+//
+// Construction: holds a reference to the same SpatialGridSystem instance that
+// CollisionSystem updated this frame (grid must be current after grid.update).
+//
+// Example:
+//   SpatialGridSystem grid;
+//   RaycastSystem raycast{grid};
+//   grid.update(registry);
+//   collisionSystem.update(registry, grid);
+//   facingRaySystem.update(registry);
+//   raycast.update(registry);
+//
+// Preconditions: ray.direction normalized; box.min/max valid for colliders.
+// =============================================================================
+
 #include "../ecs/Registry.hpp"
 #include "../components/RayComponent.hpp"
 #include "../components/RayHitComponent.hpp"

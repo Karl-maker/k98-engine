@@ -6,6 +6,31 @@
 #include <memory>
 #include <typeindex>
 
+// =============================================================================
+// Registry — central ECS facade: entities, component storage, type registration.
+//
+// COMPONENT REGISTRATION (required before addComponent<T> for that T):
+//   Registry registry;
+//   registry.registerComponent<Position>();
+//   registry.registerComponent<TransformComponent>();
+//   // ... every component type you will use
+//
+//   Entity e = registry.createEntity();
+//   registry.addComponent(e, Position{0,0,0});
+//
+// QUERIES:
+//   for (Entity e : registry.getEntitiesWith<Position, Velocity>()) { ... }
+//
+// SYSTEMS (game code — not stored inside Registry in this project):
+//   TransformSystem transform;
+//   transform.update(registry);
+//
+// Order systems explicitly in your game loop; the Registry does not schedule them.
+//
+// Skinned rendering: register `SkinnedMeshComponent` on mesh entities; it references
+// `skeletonRoot` — vertex joint indices/weights live on `ModelAsset::meshes[meshIndex].vertices`.
+// =============================================================================
+
 class Registry
 {
 public:

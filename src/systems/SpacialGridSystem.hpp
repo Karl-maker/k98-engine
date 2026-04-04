@@ -1,4 +1,28 @@
 #pragma once
+
+// =============================================================================
+// SpatialGridSystem — uniform grid broad-phase for collision and ray queries.
+// `cellSize` should be tuned to your world scale (larger = fewer cells, coarser).
+// `update(registry)` rebuilds cells from all entities with Transform + CollisionBox
+// using each box’s `min` and `max`. CollisionSystem sets those from transform.position
+// and halfSize, then calls `grid.update(registry)` internally before narrow-phase.
+// If you call `grid.update` alone, ensure min/max are up to date first.
+//
+// Registration:
+//   registry.registerComponent<TransformComponent>();
+//   registry.registerComponent<CollisionBoxComponent>();
+//
+// Example:
+//   SpatialGridSystem grid;
+//   grid.cellSize = 4.f;
+//   grid.update(registry);
+//   collisionSystem.update(registry, grid);
+//   raycastSystem.update(registry); // internal use of grid
+//
+// `getNearby(min, max)` returns entities overlapping AABB keys (used by
+// CollisionSystem and RaycastSystem).
+// =============================================================================
+
 #include <unordered_map>
 #include <vector>
 #include <unordered_set>

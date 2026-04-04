@@ -1,4 +1,23 @@
 #pragma once
+
+// =============================================================================
+// CollisionSystem — AABB broad-phase via SpatialGridSystem, narrow-phase tests,
+// touching lists, optional event handlers. Updates box min/max from transforms
+// and maintains lastPosition for movement detection.
+//
+// Registration:
+//   registry.registerComponent<CollisionBoxComponent>();
+//   registry.registerComponent<TransformComponent>();
+//
+// Example:
+//   CollisionSystem collision;
+//   collision.addHandler([](const CollisionEvent& ev) { ... });
+//   grid.update(registry);
+//   collision.update(registry, grid);
+//
+// Call `grid.update` before `collision.update` so broad-phase cells match positions.
+// =============================================================================
+
 #include "../ecs/Registry.hpp"
 #include "../components/CollisionBoxComponent.hpp"
 #include "../components/TransformComponent.hpp"
