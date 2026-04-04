@@ -30,19 +30,29 @@ struct InputState
 class Control
 {
 public:
-    Control(Entity player, Entity camera, float speed, float jumpSpeed = 9.0f)
-        : m_player(player), m_camera(camera), m_speed(speed), m_jumpSpeed(jumpSpeed)
+    /// When `useTerminalInput` is false (e.g. GLFW window), call `submitInput` instead of `handleInput`.
+    Control(Entity player, Entity camera, float speed, float jumpSpeed = 9.0f, bool useTerminalInput = true)
+        : m_player(player)
+        , m_camera(camera)
+        , m_speed(speed)
+        , m_jumpSpeed(jumpSpeed)
+        , m_useTerminalInput(useTerminalInput)
     {
-        setupTerminal();
+        if (m_useTerminalInput)
+            setupTerminal();
     }
 
     ~Control()
     {
-        restoreTerminal();
+        if (m_useTerminalInput)
+            restoreTerminal();
     }
 
     void handleInput(Registry& registry)
     {
+        if (!m_useTerminalInput)
+            return;
+
         m_rotateLeft = false;
         m_rotateRight = false;
 
@@ -52,12 +62,10 @@ public:
         if (m_rotateLeft)  input.mouseDeltaX = -0.85f;
         if (m_rotateRight) input.mouseDeltaX =  0.85f;
 
-        applyPlayerMovement(registry, input);
-        applyCameraInput(registry, input);
-
-        if (input.quit)
-            m_shouldClose = true;
+        applyInput(registry, input);
     }
+
+    void submitInput(Registry& registry, const InputState& input) { applyInput(registry, input); }
 
     bool shouldClose() const
     {
@@ -65,6 +73,14 @@ public:
     }
 
 private:
+    void applyInput(Registry& registry, const InputState& input)
+    {
+        applyPlayerMovement(registry, input);
+        applyCameraInput(registry, input);
+
+        if (input.quit)
+            m_shouldClose = true;
+    }
 
     void readKeyboard(InputState& input)
     {
@@ -209,6 +225,7 @@ private:
 
     float m_speed;
     float m_jumpSpeed;
+    bool m_useTerminalInput = true;
     bool m_shouldClose = false;
     
     bool m_rotateLeft = false;

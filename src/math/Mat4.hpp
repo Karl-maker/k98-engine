@@ -55,6 +55,32 @@ struct Mat4 {
         return mat;
     }
 
+    /// Vertical FOV in degrees, column-major, OpenGL NDC depth [-1,1]. Matches typical RH clip space.
+    static Mat4 Perspective(float fovYDegrees, float aspect, float zNear, float zFar) {
+        float rad = fovYDegrees * 3.14159265358979323846f / 180.0f;
+        float tanHalf = std::tan(rad * 0.5f);
+        if (tanHalf < 1e-8f || aspect < 1e-8f)
+            return Identity();
+        float h = 1.0f / tanHalf;
+        float w = h / aspect;
+        Mat4 r = Identity();
+        r.m[0]  = w;
+        r.m[5]  = h;
+        r.m[10] = -(zFar + zNear) / (zFar - zNear);
+        r.m[11] = -1.0f;
+        r.m[14] = -(2.0f * zFar * zNear) / (zFar - zNear);
+        r.m[15] = 0.0f;
+        return r;
+    }
+
+    static Mat4 FromScale(const Vec3& s) {
+        Mat4 m = Identity();
+        m.m[0]  = s.x;
+        m.m[5]  = s.y;
+        m.m[10] = s.z;
+        return m;
+    }
+
     Mat4 operator*(const Mat4& b) const {
         return mat4Mul(*this, b);
     }
@@ -126,6 +152,37 @@ struct Mat4 {
         float y = mat.m[1] * d.x + mat.m[5] * d.y + mat.m[9] * d.z;
         float z = mat.m[2] * d.x + mat.m[6] * d.y + mat.m[10] * d.z;
         return {x, y, z};
+    }
+
+    /// Right-handed view matrix (same convention as typical GLM `lookAtRH`): world → view.
+    static Mat4 LookAt(const Vec3& eye, const Vec3& center, const Vec3& worldUp) {
+        Vec3 f = normalize(Vec3{center.x - eye.x, center.y - eye.y, center.z - eye.z});
+        Vec3 upN = normalize(worldUp);
+        Vec3 s = normalize(cross(f, upN));
+        if (lengthSquared(s) < 1e-10f) {
+            Vec3 altUp = (std::abs(upN.y) > 0.99f) ? Vec3{1.0f, 0.0f, 0.0f} : Vec3{0.0f, 1.0f, 0.0f};
+            s = normalize(cross(f, altUp));
+        }
+        Vec3 u = cross(s, f);
+
+        Mat4 m = Identity();
+        m.m[0]  = s.x;
+        m.m[1]  = u.x;
+        m.m[2]  = -f.x;
+        m.m[3]  = 0.0f;
+        m.m[4]  = s.y;
+        m.m[5]  = u.y;
+        m.m[6]  = -f.y;
+        m.m[7]  = 0.0f;
+        m.m[8]  = s.z;
+        m.m[9]  = u.z;
+        m.m[10] = -f.z;
+        m.m[11] = 0.0f;
+        m.m[12] = -dot(s, eye);
+        m.m[13] = -dot(u, eye);
+        m.m[14] = dot(f, eye);
+        m.m[15] = 1.0f;
+        return m;
     }
 };
 
