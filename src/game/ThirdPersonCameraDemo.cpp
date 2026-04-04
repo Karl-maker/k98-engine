@@ -72,6 +72,7 @@ public:
         std::cout << "\033[2J\033[H";
 
         printActors();
+     
         printCameraDebug();
         printInstructions();
     }
@@ -162,7 +163,7 @@ private:
         // Orbit angles use followLerp; world position uses a slight under-damped spring
         // so the rig eases into place with a small overshoot when you strafe / move.
         cam.enableFollow = true;
-        cam.followLerp = 4.0f;
+        cam.followLerp = 2.2f;
         cam.followPositionSpring = true;
         cam.followSpringFrequency = 3.4f;
         cam.followSpringDampingRatio = 0.72f;
@@ -178,7 +179,7 @@ private:
         cam.orbitYaw = 0.0f; // +Z offset: behind player when forward is -Z (W)
         cam.orbitPitch = 0.35f;
         cam.orbitDistance = 6.0f;
-        cam.orbitSensitivity = 1.0f;
+        cam.orbitSensitivity = 0.32f;
         cam.minPitch = -0.6f;
         cam.maxPitch = 1.0f;
 
@@ -239,8 +240,17 @@ private:
             sm.update(dt);
             applyStateBehavior(sm, vel, dt);
 
+            vel.vy += m_gravity * static_cast<float>(dt);
+
             pos.x += vel.vx * static_cast<float>(dt);
+            pos.y += vel.vy * static_cast<float>(dt);
             pos.z += vel.vz * static_cast<float>(dt);
+
+            if (pos.y < m_floorY)
+            {
+                pos.y = m_floorY;
+                vel.vy = 0.0f;
+            }
         }
     }
 
@@ -522,6 +532,24 @@ private:
         }
     }
 
+    void printActorStateTable()
+    {
+        std::cout << "\n\033[1;36mActor states\033[0m\n";
+        std::cout << "  " << std::left << std::setw(14) << "Actor" << "State\n";
+        std::cout << "  " << std::string(28, '-') << "\n";
+
+        auto& playerSm = m_registry.getComponent<StateMachineComponent>(m_player).machine;
+        std::cout << "  " << std::setw(14) << "Player" << playerSm.getCurrentState() << "\n";
+
+        for (std::size_t i = 0; i < m_enemies.size(); ++i)
+        {
+            const Entity      e   = m_enemies[i];
+            auto&             sm  = m_registry.getComponent<StateMachineComponent>(e).machine;
+            const std::string row = std::string("Enemy ") + std::to_string(i + 1);
+            std::cout << "  " << std::setw(14) << row << sm.getCurrentState() << "\n";
+        }
+    }
+
     void printCameraDebug()
     {
         auto& camComponent = m_registry.getComponent<CameraComponent>(m_camera);
@@ -562,7 +590,7 @@ private:
 
     void printInstructions()
     {
-        std::cout << "Controls: WASD move player | Q quit\n";
+        std::cout << "Controls: WASD move (camera-relative) | Space jump | Q quit\n";
         std::cout << "Demo camera: auto-orbits player, periodically locks onto first enemy\n";
     }
 
@@ -728,5 +756,8 @@ private:
     const float m_slowingFactorPer60Fps = 0.92f;
     const float m_velocityDeadZone = 0.015f;
 
-    const float m_demoOrbitSpeed = 1.2f;
+    const float m_demoOrbitSpeed = 0.35f;
+
+    const float m_floorY  = 0.0f;
+    const float m_gravity = -28.0f;
 };

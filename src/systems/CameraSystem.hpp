@@ -53,14 +53,15 @@ public:
                 // =========================
                 // INPUT SMOOTHING (NEW)
                 // =========================
-                float inputAccel = 8.0f;
+                float inputAccel = 4.0f;
 
                 // smooth input (this is the key)
                 cam.inputVelocityX += (cam.inputDeltaX - cam.inputVelocityX) * std::clamp(inputAccel * dt, 0.0f, 1.0f);
+                cam.inputVelocityY += (cam.inputDeltaY - cam.inputVelocityY) * std::clamp(inputAccel * dt, 0.0f, 1.0f);
 
-                // apply smoothed input
+                // apply smoothed input (yaw/pitch share sensitivity; pitch uses smoothed delta like yaw)
                 cam.orbitYaw += cam.inputVelocityX * cam.orbitSensitivity;
-                cam.orbitPitch += cam.inputDeltaY * cam.orbitSensitivity;
+                cam.orbitPitch += cam.inputVelocityY * cam.orbitSensitivity;
 
                 // clamp pitch
                 if (cam.orbitPitch < cam.minPitch) cam.orbitPitch = cam.minPitch;

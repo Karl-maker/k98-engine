@@ -47,7 +47,7 @@ struct CameraComponent {
     float orbitYaw{0.0f};
     float orbitPitch{0.3f}; // slight downward angle
 
-    float orbitSensitivity{2.5f};
+    float orbitSensitivity{1.0f};
     float orbitDistance{5.0f};
 
     // clamp pitch (avoid flipping)
@@ -70,4 +70,5 @@ struct CameraComponent {
     float currentPitch{0.0f};
 
     float inputVelocityX{0.0f};
+    float inputVelocityY{0.0f};
 };
