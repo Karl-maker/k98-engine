@@ -3,6 +3,7 @@
 #include "../ecs/Registry.hpp"
 #include "../components/SocketComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
+#include "../math/Mat4.hpp"
 
 class SocketSystem {
 public:
@@ -17,11 +18,8 @@ public:
             auto* parentWorld = registry.tryGetComponent<WorldTransformComponent>(socket.parentEntity);
             if (!parentWorld) continue;
 
-            socket.worldTransform = parentWorld->world;
-
-            socket.worldTransform.m[12] += socket.localOffset.x;
-            socket.worldTransform.m[13] += socket.localOffset.y;
-            socket.worldTransform.m[14] += socket.localOffset.z;
+            Mat4 local = Mat4::FromTRS(socket.localOffset, socket.localRotation, {1.0f, 1.0f, 1.0f});
+            socket.worldTransform = mat4Mul(parentWorld->world, local);
         }
     }
 };

@@ -12,9 +12,19 @@ FetchContent_Declare(
 
 FetchContent_MakeAvailable(googletest)
 
+FetchContent_Declare(
+  tinygltf
+  GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
+  GIT_TAG v2.9.3
+)
+FetchContent_MakeAvailable(tinygltf)
+
 enable_testing()
 
+find_package(Threads REQUIRED)
+
 include_directories(include)
+include_directories(${tinygltf_SOURCE_DIR})
 
 # App
 add_executable(game_engine
@@ -22,7 +32,14 @@ add_executable(game_engine
   src/utils/math.cpp
   src/core/GameLoop.cpp
   src/statemachine/StateMachine.cpp
+  src/core/assets/importers/GltfModelImporter.cpp
 )
+
+target_include_directories(game_engine PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_link_libraries(game_engine PRIVATE Threads::Threads)
 
 # Tests
 add_executable(unit_tests

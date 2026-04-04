@@ -26,6 +26,25 @@
 #include "../systems/SpacialGridSystem.hpp"
 #include "../systems/CollisionSystem.hpp"
 #include "../systems/RaycastSystem.hpp"
+#include "../systems/AnimationSystem.hpp"
+#include "../systems/BoneSyncSystem.hpp"
+
+#include "../core/assets/AssetManager.hpp"
+#include "../core/assets/StreamingLoadService.hpp"
+#include "../core/assets/StreamingAssetCache.hpp"
+#include "../core/assets/importers/GltfModelImporter.hpp"
+#include "../core/assets/AnimationClipData.hpp"
+#include "../core/assets/ModelAsset.hpp"
+#include "../game/SkeletonSpawn.hpp"
+#include "../math/Quat.hpp"
+
+#include "../components/SkeletonInstanceComponent.hpp"
+#include "../components/SkeletonPoseComponent.hpp"
+#include "../components/AnimationPlaybackComponent.hpp"
+#include "../components/BoneInstanceComponent.hpp"
+#include "../components/StreamingAnchorComponent.hpp"
+#include "../components/StreamableModelComponent.hpp"
+#include "../components/MeshRenderProxyComponent.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -44,9 +63,16 @@ public:
         std::cout << "Third Person Camera Demo Started\n";
 
         registerComponents();
+
+        m_assetManager.registerImporter("gltf", std::make_shared<GltfModelImporter>());
+        m_assetManager.registerImporter("glb", std::make_shared<GltfModelImporter>());
+        m_streamingLoadService.setTrackedBoneNames({"hand"});
+
         createPlayer();
         createEnemies();
         createCameraRig();
+
+        createAnimationTestEntity();
 
         m_control = std::make_unique<Control>(m_player, m_camera, 5.0f);
 
@@ -77,6 +103,9 @@ public:
 
         createPlayerFacingRay();
 
+        m_streamingLoadService.update(m_registry);
+        m_animationSystem.update(m_registry, 0.0f);
+        m_boneSyncSystem.update(m_registry);
         m_transformSystem.update(m_registry);
         m_socketSystem.update(m_registry);
         m_attachmentSystem.update(m_registry);
@@ -99,7 +128,15 @@ public:
         updateActors(dt);
         syncPositionToTransform();
 
-        // Order matters
+        if (m_registry.hasComponent<TransformComponent>(m_player))
+        {
+            m_streamingCache.setViewerPosition(m_registry.getComponent<TransformComponent>(m_player).position);
+        }
+
+        // Order matters: streaming -> animation -> bone sync -> hierarchy transforms -> sockets
+        m_streamingLoadService.update(m_registry);
+        m_animationSystem.update(m_registry, static_cast<float>(dt));
+        m_boneSyncSystem.update(m_registry);
         m_transformSystem.update(m_registry);
         m_socketSystem.update(m_registry);
         m_attachmentSystem.update(m_registry);
@@ -150,6 +187,14 @@ private:
         m_registry.registerComponent<CollisionBoxComponent>();
         m_registry.registerComponent<RayComponent>();
         m_registry.registerComponent<RaycastHitComponent>();
+
+        m_registry.registerComponent<SkeletonInstanceComponent>();
+        m_registry.registerComponent<SkeletonPoseComponent>();
+        m_registry.registerComponent<AnimationPlaybackComponent>();
+        m_registry.registerComponent<BoneInstanceComponent>();
+        m_registry.registerComponent<StreamingAnchorComponent>();
+        m_registry.registerComponent<StreamableModelComponent>();
+        m_registry.registerComponent<MeshRenderProxyComponent>();
     }
 
     void createPlayer()
@@ -805,6 +850,41 @@ private:
         std::cout << "Demo camera: auto-orbits player, periodically locks onto first enemy\n";
     }
 
+    void createAnimationTestEntity()
+    {
+        auto model = std::make_shared<ModelAsset>();
+        Bone b0;
+        b0.name = "root";
+        b0.parentIndex = -1;
+        b0.restTranslation = {0.0f, 0.0f, 0.0f};
+        Bone b1;
+        b1.name = "hand";
+        b1.parentIndex = 0;
+        b1.restTranslation = {0.0f, 1.0f, 0.0f};
+        model->skeleton.bones = {b0, b1};
+        model->skeleton.boneMap["root"] = 0;
+        model->skeleton.boneMap["hand"] = 1;
+
+        AnimationClipData clip;
+        clip.name = "wave";
+        clip.durationSec = 2.0f;
+        ClipBoneChannel rotCh;
+        rotCh.boneIndex = 1;
+        rotCh.path = AnimChannelPath::Rotation;
+        rotCh.quatKeys.push_back({0.0f, quatNormalize(Quat{0.0f, 0.0f, 0.0f, 1.0f})});
+        rotCh.quatKeys.push_back({1.0f, quatNormalize(Quat{0.0f, 0.3826834f, 0.0f, 0.9238795f})});
+        rotCh.quatKeys.push_back({2.0f, quatNormalize(Quat{0.0f, 0.0f, 0.0f, 1.0f})});
+        clip.channels.push_back(rotCh);
+        model->clips.push_back(clip);
+
+        std::vector<std::string> tracked = {"hand"};
+        std::vector<Entity> spawned;
+        m_animTestRoot = spawnSkinnedHierarchy(m_registry, model, tracked, &spawned);
+
+        auto& t = m_registry.getComponent<TransformComponent>(m_animTestRoot);
+        t.position = {0.0f, 0.0f, -5.0f};
+    }
+
     // -------------------------------------------------
     // State Machines
     // -------------------------------------------------
@@ -944,7 +1024,13 @@ private:
 
     std::unique_ptr<Control> m_control;
 
+    AssetManager m_assetManager;
+    StreamingLoadService m_streamingLoadService{m_assetManager};
+    StreamingAssetCache m_streamingCache{m_assetManager};
+
     TransformSystem m_transformSystem;
+    AnimationSystem m_animationSystem;
+    BoneSyncSystem m_boneSyncSystem;
     SocketSystem m_socketSystem;
     AttachmentSystem m_attachmentSystem;
     CameraSystem m_cameraSystem;
@@ -953,6 +1039,7 @@ private:
     CollisionSystem   m_collisionSystem;
 
     Entity m_player{};
+    Entity m_animTestRoot{INVALID_ENTITY};
     Entity m_camera{};
     Entity m_cameraSocket{};
     Entity m_playerRaySocket{INVALID_ENTITY};

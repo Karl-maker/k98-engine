@@ -1,7 +1,7 @@
 #pragma once
 #include <memory>
 #include <string>
-#include "../Asset.hpp"
+#include "../IAsset.hpp"
 
 class IAssetImporter {
 public:

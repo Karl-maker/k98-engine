@@ -4,6 +4,7 @@
 #include <string>
 #include <iostream>
 #include <future>
+#include <mutex>
 #include "IAsset.hpp"
 #include "ImporterRegistry.hpp"
 
@@ -11,6 +12,7 @@ class AssetManager {
 private:
     std::unordered_map<std::string, std::shared_ptr<IAsset>> cache;
     ImporterRegistry registry;
+    std::mutex m_loadMutex;
 
 public:
     void registerImporter(const std::string& ext,
@@ -19,12 +21,11 @@ public:
     }
 
     std::shared_ptr<IAsset> load(const std::string& path) {
-        // cache check
+        std::lock_guard<std::mutex> lock(m_loadMutex);
         if (cache.count(path)) {
             return cache[path];
         }
 
-        // get extension
         auto dot = path.find_last_of('.');
         std::string ext = path.substr(dot + 1);
 
@@ -39,6 +40,11 @@ public:
 
         cache[path] = asset;
         return asset;
+    }
+
+    void unload(const std::string& path) {
+        std::lock_guard<std::mutex> lock(m_loadMutex);
+        cache.erase(path);
     }
 
     template<typename T>
