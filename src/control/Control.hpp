@@ -30,8 +30,8 @@ public:
         auto& sm = registry.getComponent<StateMachineComponent>(m_player).machine;
         auto& vel = registry.getComponent<Velocity>(m_player);
     
-        vel.vx = 0.0f;
-        vel.vz = 0.0f;
+        vel.x = 0.0f;
+        vel.z = 0.0f;
     
         bool moving = false;
     
@@ -41,22 +41,22 @@ public:
             switch (key)
             {
                 case 'w': case 'W':
-                    vel.vz = -m_speed;
+                    vel.z = -m_speed;
                     sm.handleEvent(StateEventType::MoveUp);
                     break;
 
                 case 's': case 'S':
-                    vel.vz = m_speed;
+                    vel.z = m_speed;
                     sm.handleEvent(StateEventType::MoveDown);
                     break;
 
                 case 'a': case 'A':
-                    vel.vx = -m_speed;
+                    vel.x = -m_speed;
                     sm.handleEvent(StateEventType::MoveLeft);
                     break;
 
                 case 'd': case 'D':
-                    vel.vx = m_speed;
+                    vel.x = m_speed;
                     sm.handleEvent(StateEventType::MoveRight);
                     break;
     

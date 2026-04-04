@@ -152,17 +152,17 @@ private:
         }
 
         const float fwdIn = -mz;
-        vel.vx = (mx * rx + fwdIn * fx) * m_speed;
-        vel.vz = (mx * rz + fwdIn * fz) * m_speed;
+        vel.x = (mx * rx + fwdIn * fx) * m_speed;
+        vel.z = (mx * rz + fwdIn * fz) * m_speed;
 
         constexpr float kFloorY      = 0.0f;
         constexpr float kGroundedEps = 0.02f;
         const bool      grounded =
-            pos.y <= kFloorY + kGroundedEps && vel.vy <= 0.0f;
+            pos.y <= kFloorY + kGroundedEps && vel.y <= 0.0f;
 
         if (input.jumpPressed && grounded)
         {
-            vel.vy = m_jumpSpeed;
+            vel.y = m_jumpSpeed;
         }
 
         if (input.moveX != 0.0f || input.moveZ != 0.0f)

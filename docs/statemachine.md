@@ -23,7 +23,7 @@ So: **“Subscribing” to an event** means **your game code decides when to cal
 | `StateDefinition` | same | One state: name, `onEnter` / `onUpdate` / `onExit`, and `eventTransitions`. |
 | `StateMachineConfig` | `StateMachineConfig.hpp` | `initialState` + `states` map (`std::unordered_map<std::string, StateDefinition>`). |
 | `StateMachine` | `StateMachine.hpp` / `StateMachine.cpp` | Runtime engine: `initialize`, `update`, `handleEvent`, transitions. |
-| `StateMachineComponent` | `game-engine/src/game/Components.hpp` | ECS wrapper holding a `StateMachine machine`. |
+| `StateMachineComponent` | `game-engine/src/components/StateMachineComponent.hpp` | ECS wrapper holding a `StateMachine machine`. |
 
 ### 2.1 Callback type aliases
 
@@ -150,7 +150,7 @@ config.states["Idle"] = {
 config.states["Flee"] = {
     "Flee",
     [&](Entity e) {
-        m_registry.getComponent<Velocity>(e).vx = -2;
+        m_registry.getComponent<Velocity>(e).x = -2;
     },
     nullptr,
     nullptr,

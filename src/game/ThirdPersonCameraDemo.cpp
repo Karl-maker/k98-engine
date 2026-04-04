@@ -240,16 +240,16 @@ private:
             sm.update(dt);
             applyStateBehavior(sm, vel, dt);
 
-            vel.vy += m_gravity * static_cast<float>(dt);
+            vel.y += m_gravity * static_cast<float>(dt);
 
-            pos.x += vel.vx * static_cast<float>(dt);
-            pos.y += vel.vy * static_cast<float>(dt);
-            pos.z += vel.vz * static_cast<float>(dt);
+            pos.x += vel.x * static_cast<float>(dt);
+            pos.y += vel.y * static_cast<float>(dt);
+            pos.z += vel.z * static_cast<float>(dt);
 
             if (pos.y < m_floorY)
             {
                 pos.y = m_floorY;
-                vel.vy = 0.0f;
+                vel.y = 0.0f;
             }
         }
     }
@@ -257,8 +257,8 @@ private:
     void updatePlayerStateIntent(StateMachine& sm, Velocity& vel)
     {
         const bool hasVelocity =
-            std::abs(vel.vx) > 0.01f ||
-            std::abs(vel.vz) > 0.01f;
+            std::abs(vel.x) > 0.01f ||
+            std::abs(vel.z) > 0.01f;
 
         if (hasVelocity)
         {
@@ -287,13 +287,13 @@ private:
         if (current == "Slowing")
         {
             const float damping = std::pow(m_slowingFactorPer60Fps, static_cast<float>(dt * 60.0));
-            vel.vx *= damping;
-            vel.vz *= damping;
+            vel.x *= damping;
+            vel.z *= damping;
 
-            if (std::abs(vel.vx) < m_velocityDeadZone) vel.vx = 0.0f;
-            if (std::abs(vel.vz) < m_velocityDeadZone) vel.vz = 0.0f;
+            if (std::abs(vel.x) < m_velocityDeadZone) vel.x = 0.0f;
+            if (std::abs(vel.z) < m_velocityDeadZone) vel.z = 0.0f;
 
-            if (vel.vx == 0.0f && vel.vz == 0.0f)
+            if (vel.x == 0.0f && vel.z == 0.0f)
             {
                 sm.handleEvent(StateEventType::Stop);
             }
@@ -716,7 +716,7 @@ private:
             "Flee",
             [&](Entity enemy)
             {
-                m_registry.getComponent<Velocity>(enemy).vx = -2.0f;
+                m_registry.getComponent<Velocity>(enemy).x = -2.0f;
             },
             nullptr,
             nullptr,

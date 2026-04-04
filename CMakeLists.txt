@@ -21,9 +21,6 @@ add_executable(game_engine
   src/main.cpp
   src/utils/math.cpp
   src/core/GameLoop.cpp
-  src/game/HelloWorld.cpp
-  src/game/PositionDemo.cpp
-  src/game/CameraSocketDemo.cpp
   src/statemachine/StateMachine.cpp
 )
 
