@@ -145,7 +145,8 @@ private:
         m_cameraSocket = m_registry.createEntity();
         m_registry.addComponent(m_cameraSocket, SocketComponent{
             m_player,
-            {0.0f, 1.5f, 0.0f}, // pivot near upper body
+            // World +Z is behind the player while W moves along -Z (see Control).
+            {0.0f, 1.5f, 0.85f},
             {},
             {}
         });
@@ -169,11 +170,12 @@ private:
         // Look-at behavior
         cam.enableLookAt = true;
         cam.lookAtTarget = m_player;
-        cam.lookAtOffset = {0.0f, 1.2f, 0.0f};
+        // Aim at upper chest; pitch in CameraSystem centers this in frame vertically.
+        cam.lookAtOffset = {0.0f, 1.05f, 0.0f};
 
         // Orbit behavior
         cam.enableOrbit = true;
-        cam.orbitYaw = 3.1415926f; // start behind player
+        cam.orbitYaw = 0.0f; // +Z offset: behind player when forward is -Z (W)
         cam.orbitPitch = 0.35f;
         cam.orbitDistance = 6.0f;
         cam.orbitSensitivity = 1.0f;
@@ -346,18 +348,85 @@ private:
 
     void printActors()
     {
-        std::cout << std::left << "Top-down XZ (rough)   Legend:  C camera   P player   1-9 enemy\n";
+        static constexpr float kPi = 3.14159265f;
 
-        const auto& camPos = m_registry.getComponent<TransformComponent>(m_camera).position;
+        std::cout << std::left
+                  << "Camera view (3D persp.)   Legend:  P player   1-9 enemy\n";
+
+        const auto& camComp = m_registry.getComponent<CameraComponent>(m_camera);
+        const auto& camTf   = m_registry.getComponent<TransformComponent>(m_camera);
+        const Vec3          camPos = camTf.position;
+
+        Entity lookTarget = m_player;
+        if (camComp.enableLockOn && camComp.lockOnTarget != INVALID_ENTITY)
+        {
+            lookTarget = camComp.lockOnTarget;
+        }
+        else if (camComp.enableLookAt && camComp.lookAtTarget != INVALID_ENTITY)
+        {
+            lookTarget = camComp.lookAtTarget;
+        }
+
+        const auto& targetTf = m_registry.getComponent<TransformComponent>(lookTarget);
+        const float dx =
+            (targetTf.position.x + camComp.lookAtOffset.x) - camPos.x;
+        const float dy =
+            (targetTf.position.y + camComp.lookAtOffset.y) - camPos.y;
+        const float dz =
+            (targetTf.position.z + camComp.lookAtOffset.z) - camPos.z;
+
+        const float len3 = std::sqrt(dx * dx + dy * dy + dz * dz);
+        const float fwdX = (len3 > 1.0e-5f) ? dx / len3 : 0.0f;
+        const float fwdY = (len3 > 1.0e-5f) ? dy / len3 : 1.0f;
+        const float fwdZ = (len3 > 1.0e-5f) ? dz / len3 : 0.0f;
+
+        const float yaw =
+            std::atan2(dx, dz);
+        const float horizontalDist = std::sqrt(dx * dx + dz * dz);
+        const float pitch =
+            std::atan2(dy, std::max(horizontalDist, 1.0e-5f));
+
+        float rgtX = fwdZ;
+        float rgtY = 0.0f;
+        float rgtZ = -fwdX;
+        float rLen = std::sqrt(rgtX * rgtX + rgtZ * rgtZ);
+        if (rLen > 1.0e-5f)
+        {
+            rgtX /= rLen;
+            rgtZ /= rLen;
+        }
+        else
+        {
+            rgtX = 1.0f;
+            rgtZ = 0.0f;
+        }
+
+        float upX = fwdY * rgtZ - fwdZ * rgtY;
+        float upY = fwdZ * rgtX - fwdX * rgtZ;
+        float upZ = fwdX * rgtY - fwdY * rgtX;
+        const float uLen = std::sqrt(upX * upX + upY * upY + upZ * upZ);
+        if (uLen > 1.0e-5f)
+        {
+            upX /= uLen;
+            upY /= uLen;
+            upZ /= uLen;
+        }
+
+        constexpr int kCols = 40;
+        constexpr int kRows = 12;
+
+        const float fovYRad  = camComp.fov * kPi / 180.0f;
+        const float tanHalfY = std::tan(fovYRad * 0.5f);
+        const float tanHalfX = tanHalfY * (static_cast<float>(kCols) / static_cast<float>(kRows));
 
         struct MapPoint
         {
             float x;
+            float y;
             float z;
             char  sym;
         };
         std::vector<MapPoint> mapPoints;
-        mapPoints.push_back({camPos.x, camPos.z, 'C'});
 
         auto actors = m_registry.getEntitiesWith<Position, StateMachineComponent>();
 
@@ -370,7 +439,7 @@ private:
 
             if (e == m_player)
             {
-                mapPoints.push_back({pos.x, pos.z, 'P'});
+                mapPoints.push_back({pos.x, pos.y, pos.z, 'P'});
             }
             else
             {
@@ -386,71 +455,67 @@ private:
                     (enemyIndex >= 0 && enemyIndex < 9)
                         ? static_cast<char>('1' + enemyIndex)
                         : 'E';
-                mapPoints.push_back({pos.x, pos.z, sym});
+                mapPoints.push_back({pos.x, pos.y, pos.z, sym});
             }
 
             (void)sm;
             (void)type;
         }
 
-        float minX = camPos.x;
-        float maxX = camPos.x;
-        float minZ = camPos.z;
-        float maxZ = camPos.z;
-        for (const MapPoint& p : mapPoints)
-        {
-            minX = std::min(minX, p.x);
-            maxX = std::max(maxX, p.x);
-            minZ = std::min(minZ, p.z);
-            maxZ = std::max(maxZ, p.z);
-        }
-        constexpr float kPad = 2.0f;
-        minX -= kPad;
-        maxX += kPad;
-        minZ -= kPad;
-        maxZ += kPad;
-        if (maxX - minX < 1.0f)
-        {
-            maxX = minX + 1.0f;
-        }
-        if (maxZ - minZ < 1.0f)
-        {
-            maxZ = minZ + 1.0f;
-        }
+        const float cellNx = 2.0f / static_cast<float>(kCols);
+        const float cellNy = 2.0f / static_cast<float>(kRows);
+        const float thresh2 = (cellNx * cellNx + cellNy * cellNy) * 6.25f;
 
-        constexpr int kCols = 40;
-        constexpr int kRows = 12;
-        const float hx = (maxX - minX) / (2.0f * static_cast<float>(kCols));
-        const float hz = (maxZ - minZ) / (2.0f * static_cast<float>(kRows));
-        const float thresh2 = (hx * hx + hz * hz) * 6.25f;
-
-        std::cout << "  X min " << std::setw(8) << minX << "  max " << std::setw(8) << maxX
-                  << "     Z min " << std::setw(8) << minZ << "  max " << std::setw(8) << maxZ << "\n";
+        std::cout << "  yaw(deg) " << std::setw(8) << (yaw * 180.0f / kPi) << "  pitch(deg) " << std::setw(8)
+                  << (pitch * 180.0f / kPi) << "  fov " << std::setw(6) << camComp.fov << "  eye "
+                  << camPos.x << " " << camPos.y << " " << camPos.z << "\n";
 
         for (int iz = 0; iz < kRows; ++iz)
         {
             std::cout << "  ";
             for (int ix = 0; ix < kCols; ++ix)
             {
-                const float wx = minX + (static_cast<float>(ix) + 0.5f) / static_cast<float>(kCols)
-                                 * (maxX - minX);
-                const float wz =
-                    maxZ
-                    - (static_cast<float>(iz) + 0.5f) / static_cast<float>(kRows) * (maxZ - minZ);
+                const float nxC =
+                    (static_cast<float>(ix) + 0.5f) / static_cast<float>(kCols) * 2.0f - 1.0f;
+                const float nyC =
+                    1.0f - (static_cast<float>(iz) + 0.5f) / static_cast<float>(kRows) * 2.0f;
 
-                float bestD2 = thresh2;
-                char  cell   = '.';
+                float bestD2    = thresh2;
+                float bestDepth = 1.0e30f;
+                char  cell      = '.';
+
                 for (const MapPoint& p : mapPoints)
                 {
-                    const float dx = p.x - wx;
-                    const float dz = p.z - wz;
-                    const float d2 = dx * dx + dz * dz;
-                    if (d2 < bestD2)
+                    const float vx = p.x - camPos.x;
+                    const float vy = p.y - camPos.y;
+                    const float vz = p.z - camPos.z;
+
+                    const float depth = vx * fwdX + vy * fwdY + vz * fwdZ;
+                    if (depth <= 0.05f)
                     {
-                        bestD2 = d2;
-                        cell   = p.sym;
+                        continue;
+                    }
+
+                    const float rx = vx * rgtX + vy * rgtY + vz * rgtZ;
+                    const float uy = vx * upX + vy * upY + vz * upZ;
+
+                    const float nx = (rx / depth) / tanHalfX;
+                    const float ny = (uy / depth) / tanHalfY;
+
+                    const float d2 = (nx - nxC) * (nx - nxC) + (ny - nyC) * (ny - nyC);
+                    if (d2 < bestD2 - 1.0e-6f)
+                    {
+                        bestD2    = d2;
+                        bestDepth = depth;
+                        cell      = p.sym;
+                    }
+                    else if (std::abs(d2 - bestD2) <= 1.0e-6f && depth < bestDepth)
+                    {
+                        bestDepth = depth;
+                        cell      = p.sym;
                     }
                 }
+
                 std::cout << cell;
             }
             std::cout << "\n";

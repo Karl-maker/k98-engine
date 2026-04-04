@@ -173,16 +173,27 @@ public:
             {
                 auto& target = registry.getComponent<TransformComponent>(targetEntity);
 
-                float dx = (target.position.x + cam.lookAtOffset.x) - transform.position.x;
-                float dz = (target.position.z + cam.lookAtOffset.z) - transform.position.z;
+                const float dx = (target.position.x + cam.lookAtOffset.x) - transform.position.x;
+                const float dy = (target.position.y + cam.lookAtOffset.y) - transform.position.y;
+                const float dz = (target.position.z + cam.lookAtOffset.z) - transform.position.z;
 
-                float yaw = std::atan2(dx, dz);
-                float halfYaw = yaw * 0.5f;
+                const float horizontalDist =
+                    std::sqrt(dx * dx + dz * dz);
+                const float yaw   = std::atan2(dx, dz);
+                const float pitch = std::atan2(dy, std::max(horizontalDist, 1.0e-5f));
 
-                transform.rotation.x = 0.0f;
-                transform.rotation.y = std::sin(halfYaw);
-                transform.rotation.z = 0.0f;
-                transform.rotation.w = std::cos(halfYaw);
+                const float halfYaw   = yaw * 0.5f;
+                const float halfPitch = pitch * 0.5f;
+                const float sy        = std::sin(halfYaw);
+                const float cy        = std::cos(halfYaw);
+                const float sp        = std::sin(halfPitch);
+                const float cp        = std::cos(halfPitch);
+
+                // q = q_yaw * q_pitch (yaw around world Y, then pitch around local X)
+                transform.rotation.x = cy * sp;
+                transform.rotation.y = sy * cp;
+                transform.rotation.z = -sy * sp;
+                transform.rotation.w = cy * cp;
             }
 
             // =========================
