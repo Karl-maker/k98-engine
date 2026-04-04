@@ -69,7 +69,7 @@ public:
                 // =========================
                 // INPUT SMOOTHING (NEW)
                 // =========================
-                float inputAccel = 4.0f;
+                float inputAccel = 6.5f;
 
                 // smooth input (this is the key)
                 cam.inputVelocityX += (cam.inputDeltaX - cam.inputVelocityX) * std::clamp(inputAccel * dt, 0.0f, 1.0f);

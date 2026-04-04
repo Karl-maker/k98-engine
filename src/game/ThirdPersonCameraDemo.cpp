@@ -67,6 +67,7 @@
 #include <vector>
 #include <algorithm>
 #include <cstdint>
+#include <random>
 
 class ThirdPersonCameraDemo final : public IGame
 {
@@ -212,6 +213,8 @@ public:
         updateEnvironmentGroup(dt);
         updateSimulationGroup(dt);
         updatePhysicsGroup(dt);
+
+        syncEnemyAggroFromFacingRay();
     }
 
     void onRender(double) override
@@ -293,26 +296,35 @@ private:
 
     void createEnemies()
     {
-        for (int i = 0; i < 3; ++i)
+        constexpr int kEnemyCount = 100;
+        constexpr int kGridSide   = 10;
+        constexpr float kSpacing  = 5.0f;
+        const float kGridOrigin = -0.5f * static_cast<float>(kGridSide - 1) * kSpacing;
+
+        m_enemyWander.resize(static_cast<std::size_t>(kEnemyCount));
+
+        for (int i = 0; i < kEnemyCount; ++i)
         {
             Entity e = m_registry.createEntity();
-            const float startX = float(i * 3 + 3);
+            const int row = i / kGridSide;
+            const int col = i % kGridSide;
+            const float startX = kGridOrigin + static_cast<float>(col) * kSpacing;
+            const float startZ = kGridOrigin + static_cast<float>(row) * kSpacing;
 
-            m_registry.addComponent(e, Position{startX, 0.0f, 0.0f});
+            m_registry.addComponent(e, Position{startX, 0.0f, startZ});
             m_registry.addComponent(e, Velocity{0.0f, 0.0f, 0.0f});
             m_registry.addComponent(e, Health{100});
             m_registry.addComponent(e, TransformComponent{});
             m_registry.addComponent(e, WorldTransformComponent{});
 
             auto& t = m_registry.getComponent<TransformComponent>(e);
-            t.position = {startX, 0.0f, 0.0f};
+            t.position = {startX, 0.0f, startZ};
 
             {
                 CollisionBoxComponent box{};
                 box.halfSize     = {m_collisionHalfX, m_collisionHalfY, m_collisionHalfZ};
-                box.lastPosition = {startX, 0.0f, 0.0f};
-                // Bit flags: enemy slot i uses bit (i+1). Facing ray mask hits only bits 2 and 3 (enemies 2 & 3).
-                box.layer = (1u << (i + 1));
+                box.lastPosition = {startX, 0.0f, startZ};
+                box.layer        = kLayerEnemyCrowd;
                 m_registry.addComponent(e, box);
             }
 
@@ -361,7 +373,7 @@ private:
         cam.orbitYaw = 0.0f; // +Z offset: behind player when forward is -Z (W)
         cam.orbitPitch = 0.35f;
         cam.orbitDistance = 6.0f;
-        cam.orbitSensitivity = 0.32f;
+        cam.orbitSensitivity = 0.58f;
         cam.minPitch = -0.6f;
         cam.maxPitch = 1.0f;
 
@@ -450,6 +462,11 @@ private:
             sm.update(dt);
             applyStateBehavior(sm, vel, dt);
 
+            if (m_registry.hasComponent<EnemyTagComponent>(e) && sm.getCurrentState() != "Chase")
+            {
+                applyEnemyWander(e, vel);
+            }
+
             vel.y += m_gravity * static_cast<float>(dt);
 
             pos.x += vel.x * static_cast<float>(dt);
@@ -508,6 +525,47 @@ private:
                 sm.handleEvent(StateEventType::Stop);
             }
         }
+    }
+
+    /// Slow random walk on XZ; uses EnemyTagComponent::slot to index wander state.
+    void applyEnemyWander(Entity e, Velocity& vel)
+    {
+        const std::uint32_t slot = m_registry.getComponent<EnemyTagComponent>(e).slot;
+        if (slot >= m_enemyWander.size())
+            return;
+
+        EnemyWanderState& w = m_enemyWander[slot];
+        auto&               pos = m_registry.getComponent<Position>(e);
+
+        std::uniform_real_distribution<double> nextGap(0.9, 3.2);
+        std::uniform_real_distribution<float>  angle(0.0f, 6.2831855f);
+
+        if (w.nextDirChangeSec < 0.0 || m_elapsedTime >= w.nextDirChangeSec)
+        {
+            w.nextDirChangeSec = m_elapsedTime + nextGap(m_rng);
+            const float a = angle(m_rng);
+            w.vx = std::cos(a) * m_enemyWanderSpeed;
+            w.vz = std::sin(a) * m_enemyWanderSpeed;
+        }
+
+        // Keep the crowd near the origin so they do not drift forever.
+        if (std::abs(pos.x) > m_enemyWanderArenaHalf || std::abs(pos.z) > m_enemyWanderArenaHalf)
+        {
+            float dx = -pos.x;
+            float dz = -pos.z;
+            const float len = std::sqrt(dx * dx + dz * dz);
+            if (len > 1e-4f)
+            {
+                dx /= len;
+                dz /= len;
+                w.vx = dx * m_enemyWanderSpeed;
+                w.vz = dz * m_enemyWanderSpeed;
+                w.nextDirChangeSec = m_elapsedTime + nextGap(m_rng);
+            }
+        }
+
+        vel.x = w.vx;
+        vel.z = w.vz;
     }
 
     bool isEnemyEntity(Entity e) const
@@ -717,8 +775,19 @@ private:
         };
 
         printRow(m_player);
+        constexpr std::size_t kMaxEnemyRowsInTable = 14;
+        std::size_t           enemyRow = 0;
         for (Entity en : m_enemies)
-            printRow(en);
+        {
+            if (enemyRow < kMaxEnemyRowsInTable)
+                printRow(en);
+            ++enemyRow;
+        }
+        if (m_enemies.size() > kMaxEnemyRowsInTable)
+        {
+            std::cout << " " << std::left << std::setw(Wname) << ("… +" + std::to_string(m_enemies.size() - kMaxEnemyRowsInTable) + " enemies")
+                      << "\n";
+        }
         printRow(m_camera);
         if (m_playerAnimBone != INVALID_ENTITY)
             printRow(m_playerAnimBone);
@@ -1219,9 +1288,67 @@ private:
             {}
         };
 
+        // Run toward the player each tick; entered when the facing ray hits this enemy.
+        config.states["Chase"] = {
+            "Chase",
+            nullptr,
+            [this](Entity enemy, double dt)
+            {
+                (void)dt;
+                if (!m_registry.hasComponent<Velocity>(enemy) || !m_registry.hasComponent<Position>(enemy))
+                    return;
+                if (!m_registry.hasComponent<Position>(m_player))
+                    return;
+
+                auto&       vel = m_registry.getComponent<Velocity>(enemy);
+                const auto& pos = m_registry.getComponent<Position>(enemy);
+                const auto& ppos = m_registry.getComponent<Position>(m_player);
+
+                float dx = ppos.x - pos.x;
+                float dz = ppos.z - pos.z;
+                const float lenSq = dx * dx + dz * dz;
+                if (lenSq > 0.02f)
+                {
+                    const float inv = 1.0f / std::sqrt(lenSq);
+                    dx *= inv;
+                    dz *= inv;
+                    vel.x = dx * m_chaseSpeed;
+                    vel.z = dz * m_chaseSpeed;
+                }
+                else
+                {
+                    vel.x = 0.0f;
+                    vel.z = 0.0f;
+                }
+            },
+            nullptr,
+            {}
+        };
+
         m_registry.addComponent(e, StateMachineComponent{});
         auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
         sm.initialize(e, config);
+    }
+
+    /// If the gameplay facing ray hits an enemy, they transition to Chase.
+    void syncEnemyAggroFromFacingRay()
+    {
+        if (m_facingRayEntity == INVALID_ENTITY || !m_registry.hasComponent<RaycastHitComponent>(m_facingRayEntity))
+            return;
+
+        const auto& hit = m_registry.getComponent<RaycastHitComponent>(m_facingRayEntity);
+        if (!hit.hit || hit.entity == INVALID_ENTITY)
+            return;
+        if (!isEnemyEntity(hit.entity))
+            return;
+        if (!m_registry.hasComponent<StateMachineComponent>(hit.entity))
+            return;
+
+        auto& sm = m_registry.getComponent<StateMachineComponent>(hit.entity).machine;
+        if (sm.getCurrentState() == "Chase")
+            return;
+
+        sm.forceTransitionTo("Chase");
     }
 
 private:
@@ -1257,6 +1384,14 @@ private:
 
     std::vector<Entity> m_enemies;
 
+    struct EnemyWanderState {
+        double nextDirChangeSec = -1.0;
+        float  vx               = 0.0f;
+        float  vz               = 0.0f;
+    };
+    std::vector<EnemyWanderState> m_enemyWander;
+    std::mt19937                    m_rng{std::random_device{}()};
+
     double m_elapsedTime = 0.0;
     double m_lastMoveInputTime = 0.0;
     bool m_shouldClose = false;
@@ -1274,6 +1409,13 @@ private:
     const float m_floorY  = 0.0f;
     const float m_gravity = -28.0f;
 
+    /// Horizontal speed for enemy random walk (units / second).
+    const float m_enemyWanderSpeed     = 0.42f;
+    const float m_enemyWanderArenaHalf = 32.0f;
+
+    /// Run speed when an enemy is chasing the player (units / second).
+    const float m_chaseSpeed = 3.2f;
+
     const float m_collisionHalfX = 0.4f;
     const float m_collisionHalfY = 0.55f;
     const float m_collisionHalfZ = 0.4f;
@@ -1281,7 +1423,7 @@ private:
     std::uint64_t m_playerEnemyCollisionEnters = 0;
 
     /// Mouse delta → orbit input (used with centered cursor; window-coordinate deltas).
-    float m_mouseSensitivity = 0.0025f;
+    float m_mouseSensitivity = 0.0048f;
 
     OpenGLRenderSystem m_gl;
 
@@ -1290,8 +1432,8 @@ private:
     const float m_raySweepRadius = 0.55f;
 
     // Collision layers (bit flags on CollisionBoxComponent::layer). Ray.layerMask selects what can be hit.
-    static constexpr uint32_t kLayerPlayer              = 1u << 0;
-    static constexpr uint32_t kLayerEnemySlot1 = 1u << 2; // ASCII "2"
-    static constexpr uint32_t kLayerEnemySlot2 = 1u << 3; // ASCII "3"
-    static constexpr uint32_t kFacingRayEnemyLayerMask  = kLayerEnemySlot1 | kLayerEnemySlot2;
+    static constexpr uint32_t kLayerPlayer           = 1u << 0;
+    /// Shared by all crowd enemies so facing ray can hit any of them without per-entity bits.
+    static constexpr uint32_t kLayerEnemyCrowd       = 1u << 1;
+    static constexpr uint32_t kFacingRayEnemyLayerMask = kLayerEnemyCrowd;
 };
