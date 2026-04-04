@@ -3,6 +3,7 @@
 #include <memory>
 #include <string>
 #include <iostream>
+#include <future>
 #include "IAsset.hpp"
 #include "ImporterRegistry.hpp"
 
@@ -38,5 +39,14 @@ public:
 
         cache[path] = asset;
         return asset;
+    }
+
+    template<typename T>
+    std::future<AssetHandle<T>> loadAsync(const std::string& path) {
+        return std::async(std::launch::async, [this, path]() {
+            AssetHandle<T> handle;
+            handle.asset = std::static_pointer_cast<T>(load(path));
+            return handle;
+        });
     }
 };

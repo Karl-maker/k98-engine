@@ -14,6 +14,11 @@ public:
         model->vertices.push_back({0,0,0});
         model->vertices.push_back({1,0,0});
 
+        // for (auto& mat : model->materials) {
+        //     assetManager->loadAsync<TextureAsset>(mat.albedoTexture);
+        //     assetManager->loadAsync<TextureAsset>(mat.normalTexture);
+        // }
+
         return model;
     }
 };
