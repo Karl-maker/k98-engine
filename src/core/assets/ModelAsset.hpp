@@ -10,8 +10,11 @@
 #include <unordered_map>
 
 struct Material {
+    /// Resolved filesystem paths (directory of .gltf + image uri).
     std::string albedoTexture;
     std::string normalTexture;
+    std::string occlusionTexture;
+    std::string metallicRoughnessTexture;
 };
 
 struct Mesh {

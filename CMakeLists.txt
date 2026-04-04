@@ -62,6 +62,9 @@ target_include_directories(game_engine PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+# Lets the game find assets/sci-fi/... when the working directory is build/ or arbitrary.
+target_compile_definitions(game_engine PRIVATE "GAME_ENGINE_PROJECT_ROOT=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
+
 if(NOT APPLE)
   target_include_directories(game_engine PRIVATE ${glew_SOURCE_DIR}/include)
   target_sources(game_engine PRIVATE ${glew_SOURCE_DIR}/src/glew.c)

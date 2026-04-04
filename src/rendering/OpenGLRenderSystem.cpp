@@ -1,8 +1,12 @@
 #include "OpenGLRenderSystem.hpp"
 
+#include "../core/assets/ModelAsset.hpp"
+#include "../math/Mat4.hpp"
+#include "../math/Vertex.hpp"
 #include "../components/BoneInstanceComponent.hpp"
 #include "../components/CameraComponent.hpp"
 #include "../components/GameplayTags.hpp"
+#include "../components/StaticMeshComponent.hpp"
 #include "../components/TransformComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
 #include "../math/Vec3.hpp"
@@ -21,7 +25,10 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <string>
 #include <vector>
+
+#include "stb_image.h"
 
 static const char* kVertSrc = R"(
 #version 330 core
@@ -51,6 +58,107 @@ void main() {
     FragColor = vec4(c, 1.0);
 }
 )";
+
+static const char* kTexVertSrc = R"(
+#version 330 core
+layout (location = 0) in vec3 aPos;
+layout (location = 1) in vec3 aNormal;
+layout (location = 2) in vec2 aUV;
+layout (location = 3) in vec4 aTangent;
+uniform mat4 uModel;
+uniform mat4 uMVP;
+out vec3 vWorldPos;
+out vec3 vN;
+out vec4 vTan;
+out vec2 vUV;
+void main() {
+    vec4 wp = uModel * vec4(aPos, 1.0);
+    vWorldPos = wp.xyz;
+    mat3 M = mat3(transpose(inverse(uModel)));
+    vN = normalize(M * aNormal);
+    vTan = vec4(normalize(M * aTangent.xyz), aTangent.w);
+    vUV = aUV;
+    gl_Position = uMVP * vec4(aPos, 1.0);
+}
+)";
+
+static const char* kTexFragSrc = R"(
+#version 330 core
+in vec3 vWorldPos;
+in vec3 vN;
+in vec4 vTan;
+in vec2 vUV;
+uniform sampler2D uAlbedo;
+uniform sampler2D uNormalMap;
+uniform sampler2D uOcclusion;
+uniform sampler2D uMetallicRoughness;
+uniform int uUseNormalMap;
+uniform int uUseOcclusion;
+uniform int uUseMetallicRoughness;
+uniform vec3 uLightDir;
+uniform vec3 uAmbient;
+uniform vec3 uTint;
+out vec4 FragColor;
+void main() {
+    vec4 base = texture(uAlbedo, vUV) * vec4(uTint, 1.0);
+    if (base.a < 0.35)
+        discard;
+    vec3 N = normalize(vN);
+    if (uUseNormalMap != 0) {
+        vec3 nm = texture(uNormalMap, vUV).xyz * 2.0 - 1.0;
+        vec3 T = normalize(vTan.xyz);
+        vec3 B = normalize(cross(N, T) * vTan.w);
+        mat3 TBN = mat3(T, B, N);
+        N = normalize(TBN * nm);
+    }
+    float occ = 1.0;
+    if (uUseOcclusion != 0)
+        occ = texture(uOcclusion, vUV).r;
+    float rough = 0.5;
+    if (uUseMetallicRoughness != 0)
+        rough = texture(uMetallicRoughness, vUV).g;
+    vec3 L = normalize(-uLightDir);
+    float ndl = max(dot(N, L), 0.0);
+    float diffuseTerm = mix(0.45, 0.65, rough);
+    vec3 ambLit = uAmbient * occ;
+    vec3 c = base.rgb * (ambLit + vec3(diffuseTerm) * ndl);
+    FragColor = vec4(c, base.a);
+}
+)";
+
+static GLuint loadTexture2DFromFile(const std::string& path, bool srgb) {
+    if (path.empty())
+        return 0;
+    int w = 0, h = 0, n = 0;
+    unsigned char* data = stbi_load(path.c_str(), &w, &h, &n, 4);
+    if (!data) {
+        std::cerr << "Texture load failed: " << path << "\n";
+        return 0;
+    }
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    (void)srgb;
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    stbi_image_free(data);
+    return tex;
+}
+
+static GLuint make1x1WhiteTexture() {
+    unsigned char px[4] = {255, 255, 255, 255};
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, px);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    return tex;
+}
 
 static GLuint compileShader(GLenum type, const char* src) {
     GLuint s = glCreateShader(type);
@@ -128,6 +236,7 @@ bool OpenGLRenderSystem::init(int width, int height, const char* title) {
     }
 
     buildPyramidMesh();
+    buildTexturedShaderPipeline();
     return true;
 }
 
@@ -176,7 +285,213 @@ void OpenGLRenderSystem::buildPyramidMesh() {
     glBindVertexArray(0);
 }
 
+void OpenGLRenderSystem::buildTexturedShaderPipeline() {
+    GLuint vs = compileShader(GL_VERTEX_SHADER, kTexVertSrc);
+    GLuint fs = compileShader(GL_FRAGMENT_SHADER, kTexFragSrc);
+    if (!vs || !fs)
+        return;
+    m_texProgram = glCreateProgram();
+    glAttachShader(m_texProgram, vs);
+    glAttachShader(m_texProgram, fs);
+    glLinkProgram(m_texProgram);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    GLint linked = 0;
+    glGetProgramiv(m_texProgram, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[1024];
+        glGetProgramInfoLog(m_texProgram, sizeof(log), nullptr, log);
+        std::cerr << "Textured program link: " << log << "\n";
+        glDeleteProgram(m_texProgram);
+        m_texProgram = 0;
+    }
+}
+
+void OpenGLRenderSystem::releaseGpuMeshesForKey(const std::string& assetCacheKey) {
+    auto it = m_gpuMeshByAssetKey.find(assetCacheKey);
+    if (it == m_gpuMeshByAssetKey.end())
+        return;
+    for (StaticMeshPart& p : it->second) {
+        if (p.ebo)
+            glDeleteBuffers(1, &p.ebo);
+        if (p.vbo)
+            glDeleteBuffers(1, &p.vbo);
+        if (p.vao)
+            glDeleteVertexArrays(1, &p.vao);
+        if (p.albedo)
+            glDeleteTextures(1, &p.albedo);
+        if (p.normalMap)
+            glDeleteTextures(1, &p.normalMap);
+        if (p.occlusionMap)
+            glDeleteTextures(1, &p.occlusionMap);
+        if (p.metallicRoughnessMap)
+            glDeleteTextures(1, &p.metallicRoughnessMap);
+        p = {};
+    }
+    m_gpuMeshByAssetKey.erase(it);
+}
+
+void OpenGLRenderSystem::releaseStaticModel() {
+    std::vector<std::string> keys;
+    keys.reserve(m_gpuMeshByAssetKey.size());
+    for (const auto& kv : m_gpuMeshByAssetKey)
+        keys.push_back(kv.first);
+    for (const std::string& k : keys)
+        releaseGpuMeshesForKey(k);
+}
+
+bool OpenGLRenderSystem::uploadStaticModel(const ModelAsset& model, const std::string& assetCacheKey) {
+    if (assetCacheKey.empty() || model.meshes.empty() || !m_window)
+        return false;
+
+    releaseGpuMeshesForKey(assetCacheKey);
+
+    std::vector<StaticMeshPart> parts;
+    parts.reserve(model.meshes.size());
+
+    const GLsizei stride = static_cast<GLsizei>(sizeof(Vertex));
+
+    for (const Mesh& mesh : model.meshes) {
+        if (mesh.vertices.empty() || mesh.indices.empty())
+            continue;
+
+        StaticMeshPart part{};
+
+        const Material* mat = nullptr;
+        if (mesh.materialIndex >= 0 && static_cast<size_t>(mesh.materialIndex) < model.materials.size())
+            mat = &model.materials[static_cast<size_t>(mesh.materialIndex)];
+
+        part.albedo = (mat && !mat->albedoTexture.empty()) ? loadTexture2DFromFile(mat->albedoTexture, true) : 0;
+        if (!part.albedo)
+            part.albedo = make1x1WhiteTexture();
+
+        if (mat && !mat->normalTexture.empty()) {
+            part.normalMap = loadTexture2DFromFile(mat->normalTexture, false);
+            part.hasNormalMap = part.normalMap != 0;
+        }
+
+        if (mat && !mat->occlusionTexture.empty()) {
+            part.occlusionMap = loadTexture2DFromFile(mat->occlusionTexture, false);
+            part.hasOcclusion = part.occlusionMap != 0;
+        }
+
+        if (mat && !mat->metallicRoughnessTexture.empty()) {
+            part.metallicRoughnessMap = loadTexture2DFromFile(mat->metallicRoughnessTexture, false);
+            part.hasMetallicRoughness = part.metallicRoughnessMap != 0;
+        }
+
+        glGenVertexArrays(1, &part.vao);
+        glGenBuffers(1, &part.vbo);
+        glGenBuffers(1, &part.ebo);
+        glBindVertexArray(part.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, part.vbo);
+        glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(Vertex), mesh.vertices.data(), GL_STATIC_DRAW);
+
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, part.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(int), mesh.indices.data(), GL_STATIC_DRAW);
+
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)(sizeof(float) * 3));
+        glEnableVertexAttribArray(1);
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)(sizeof(float) * 6));
+        glEnableVertexAttribArray(2);
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, (void*)(sizeof(float) * 8));
+        glEnableVertexAttribArray(3);
+
+        glBindVertexArray(0);
+        part.indexCount = static_cast<int>(mesh.indices.size());
+        parts.push_back(std::move(part));
+    }
+
+    if (parts.empty())
+        return false;
+
+    m_gpuMeshByAssetKey[assetCacheKey] = std::move(parts);
+    return true;
+}
+
+void OpenGLRenderSystem::drawTexturedModel(const Mat4& vp, const Mat4& model, const std::string& assetCacheKey) {
+    auto it = m_gpuMeshByAssetKey.find(assetCacheKey);
+    if (it == m_gpuMeshByAssetKey.end() || it->second.empty() || m_texProgram == 0)
+        return;
+
+    glUseProgram(m_texProgram);
+
+    Mat4 mvp = mat4Mul(vp, model);
+
+    GLint uM = glGetUniformLocation(m_texProgram, "uModel");
+    GLint uMvp = glGetUniformLocation(m_texProgram, "uMVP");
+    GLint uL = glGetUniformLocation(m_texProgram, "uLightDir");
+    GLint uA = glGetUniformLocation(m_texProgram, "uAmbient");
+    GLint uTint = glGetUniformLocation(m_texProgram, "uTint");
+    GLint uAlb = glGetUniformLocation(m_texProgram, "uAlbedo");
+    GLint uNorm = glGetUniformLocation(m_texProgram, "uNormalMap");
+    GLint uOcc = glGetUniformLocation(m_texProgram, "uOcclusion");
+    GLint uMr = glGetUniformLocation(m_texProgram, "uMetallicRoughness");
+    GLint uUseN = glGetUniformLocation(m_texProgram, "uUseNormalMap");
+    GLint uUseOcc = glGetUniformLocation(m_texProgram, "uUseOcclusion");
+    GLint uUseMr = glGetUniformLocation(m_texProgram, "uUseMetallicRoughness");
+
+    glUniformMatrix4fv(uM, 1, GL_FALSE, model.m);
+    glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m);
+
+    float lightDir[3] = {0.35f, 0.85f, 0.35f};
+    float len = std::sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
+    if (len > 1e-5f) {
+        lightDir[0] /= len;
+        lightDir[1] /= len;
+        lightDir[2] /= len;
+    }
+    glUniform3fv(uL, 1, lightDir);
+    glUniform3f(uA, 0.22f, 0.22f, 0.25f);
+    glUniform3f(uTint, 1.0f, 1.0f, 1.0f);
+
+    const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    for (const StaticMeshPart& part : it->second) {
+        glUniform1i(uUseN, part.hasNormalMap ? 1 : 0);
+        glUniform1i(uUseOcc, part.hasOcclusion ? 1 : 0);
+        glUniform1i(uUseMr, part.hasMetallicRoughness ? 1 : 0);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, part.albedo);
+        glUniform1i(uAlb, 0);
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, part.hasNormalMap ? part.normalMap : part.albedo);
+        glUniform1i(uNorm, 1);
+
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, part.hasOcclusion ? part.occlusionMap : part.albedo);
+        glUniform1i(uOcc, 2);
+
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, part.hasMetallicRoughness ? part.metallicRoughnessMap : part.albedo);
+        glUniform1i(uMr, 3);
+
+        glBindVertexArray(part.vao);
+        glDrawElements(GL_TRIANGLES, part.indexCount, GL_UNSIGNED_INT, nullptr);
+    }
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+
+    if (cullWas)
+        glEnable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+
+    glUseProgram(m_program);
+}
+
 void OpenGLRenderSystem::shutdown() {
+    releaseStaticModel();
+    if (m_texProgram) {
+        glDeleteProgram(m_texProgram);
+        m_texProgram = 0;
+    }
     if (m_vbo) {
         glDeleteBuffers(1, &m_vbo);
         m_vbo = 0;
@@ -298,6 +613,34 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
     Mat4 proj = Mat4::Perspective(cam.fov, aspect, cam.nearPlane, cam.farPlane);
     Mat4 vp = mat4Mul(proj, view);
 
+    Entity playerEntity = INVALID_ENTITY;
+    for (Entity e : registry.getEntitiesWith<PlayerTagComponent, TransformComponent>()) {
+        playerEntity = e;
+        break;
+    }
+
+    for (Entity e : registry.getEntitiesWith<StaticMeshComponent, TransformComponent>())
+    {
+        auto& smc = registry.getComponent<StaticMeshComponent>(e);
+        if (!smc.gpuRegistered || smc.assetCacheKey.empty())
+            continue;
+        if (m_gpuMeshByAssetKey.find(smc.assetCacheKey) == m_gpuMeshByAssetKey.end())
+            continue;
+
+        Mat4 base = Mat4::Identity();
+        if (registry.hasComponent<WorldTransformComponent>(e))
+            base = registry.getComponent<WorldTransformComponent>(e).world;
+        else {
+            const auto& t = registry.getComponent<TransformComponent>(e);
+            base = Mat4::FromTRS(t.position, t.rotation, t.scale);
+        }
+
+        const Mat4 R = Mat4::FromTR({0.0f, 0.0f, 0.0f}, smc.modelSpaceRotation);
+        const Mat4 S = Mat4::FromScale({smc.uniformScale, smc.uniformScale, smc.uniformScale});
+        const Mat4 combined = mat4Mul(mat4Mul(base, R), S);
+        drawTexturedModel(vp, combined, smc.assetCacheKey);
+    }
+
     glUseProgram(m_program);
 
     auto drawAt = [&](const Vec3& pos, float scale, const float col[3]) {
@@ -310,10 +653,16 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
     const float colEnemy[3] = {0.85f, 0.35f, 0.2f};
     const float colBone[3] = {0.9f, 0.85f, 0.2f};
 
-    for (Entity e : registry.getEntitiesWith<PlayerTagComponent, TransformComponent>())
-    {
-        drawAt(worldTranslation(e), 1.15f, colPlayer);
-        break;
+    bool playerHasRenderableMesh = false;
+    if (playerEntity != INVALID_ENTITY && registry.hasComponent<StaticMeshComponent>(playerEntity)) {
+        const auto& sm = registry.getComponent<StaticMeshComponent>(playerEntity);
+        playerHasRenderableMesh =
+            sm.gpuRegistered && !sm.assetCacheKey.empty() &&
+            m_gpuMeshByAssetKey.find(sm.assetCacheKey) != m_gpuMeshByAssetKey.end();
+    }
+
+    if (playerEntity != INVALID_ENTITY && !playerHasRenderableMesh) {
+        drawAt(worldTranslation(playerEntity), 1.15f, colPlayer);
     }
 
     for (Entity e : registry.getEntitiesWith<EnemyTagComponent, TransformComponent>())

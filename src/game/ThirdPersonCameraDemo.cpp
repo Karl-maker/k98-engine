@@ -41,7 +41,9 @@
 #include "../core/ThreadService.hpp"
 #include "../core/assets/importers/GltfModelImporter.hpp"
 #include "../core/assets/AnimationClipData.hpp"
+#include "../core/assets/IAsset.hpp"
 #include "../core/assets/ModelAsset.hpp"
+#include "../components/StaticMeshComponent.hpp"
 #include "../math/Quat.hpp"
 #include "../math/Mat4.hpp"
 
@@ -141,6 +143,7 @@ public:
                 if (ww > 0 && wh > 0)
                     glfwSetCursorPos(m_gl.window(), static_cast<double>(ww) * 0.5, static_cast<double>(wh) * 0.5);
             }
+            loadGirlShowcaseModel();
         }
     }
 
@@ -270,6 +273,7 @@ private:
         m_registry.registerComponent<PlayerTagComponent>();
         m_registry.registerComponent<EnemyTagComponent>();
         m_registry.registerComponent<FacingRayDriverComponent>();
+        m_registry.registerComponent<StaticMeshComponent>();
     }
 
     void createPlayer()
@@ -332,6 +336,53 @@ private:
             m_registry.addComponent(e, EnemyTagComponent{static_cast<std::uint32_t>(i)});
             m_enemies.push_back(e);
         }
+    }
+
+    void loadGirlShowcaseModel()
+    {
+        auto tryLoad = [this](const std::string& path) -> bool {
+            if (path.empty())
+                return false;
+            std::shared_ptr<IAsset> asset = m_assetManager.load(path);
+            if (!asset)
+                return false;
+            auto model = std::dynamic_pointer_cast<ModelAsset>(asset);
+            if (!model || model->meshes.empty())
+                return false;
+            if (!m_gl.uploadStaticModel(*model, path)) {
+                std::cerr << "OpenGL upload failed for " << path << "\n";
+                return false;
+            }
+            constexpr float kDegToRad = 3.14159265f / 180.0f;
+            StaticMeshComponent sm{};
+            sm.assetCacheKey = path;
+            // Sketchfab / glTF root often lays the model in XZ; rotate -90° about X to stand upright (Y-up).
+            sm.modelSpaceRotation = quatFromAxisAngleRad({1.0f, 0.0f, 0.0f}, -90.0f * kDegToRad);
+            sm.uniformScale = 0.14f;
+            sm.gpuRegistered = true;
+            m_registry.addComponent(m_player, sm);
+            std::cout << "Loaded sci-fi girl: " << path << " (" << model->meshes.size() << " mesh parts)\n";
+            return true;
+        };
+
+#ifdef GAME_ENGINE_PROJECT_ROOT
+        {
+            const std::string root = GAME_ENGINE_PROJECT_ROOT;
+            if (!root.empty() && tryLoad(root + "/assets/sci-fi/girl/girl.gltf"))
+                return;
+        }
+#endif
+
+        static const char* relativePaths[] = {
+            "assets/sci-fi/girl/girl.gltf",
+            "../assets/sci-fi/girl/girl.gltf",
+        };
+        for (const char* p : relativePaths) {
+            if (tryLoad(p))
+                return;
+        }
+
+        std::cerr << "Note: could not load sci-fi girl (expected assets/sci-fi/girl/girl.gltf under the project).\n";
     }
 
     void createCameraRig()

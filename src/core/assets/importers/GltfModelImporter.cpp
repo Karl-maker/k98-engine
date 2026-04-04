@@ -16,6 +16,25 @@
 
 namespace {
 
+std::string directoryOfFilePath(const std::string& path) {
+    size_t last = path.find_last_of("/\\");
+    if (last == std::string::npos)
+        return std::string();
+    return path.substr(0, last + 1);
+}
+
+std::string imagePathFromTextureIndex(const tinygltf::Model& model, const std::string& baseDir, int textureIndex) {
+    if (textureIndex < 0 || static_cast<size_t>(textureIndex) >= model.textures.size())
+        return {};
+    const int src = model.textures[static_cast<size_t>(textureIndex)].source;
+    if (src < 0 || static_cast<size_t>(src) >= model.images.size())
+        return {};
+    const std::string& uri = model.images[static_cast<size_t>(src)].uri;
+    if (uri.empty())
+        return {};
+    return baseDir + uri;
+}
+
 int componentTypeSize(int t) {
     switch (t) {
         case TINYGLTF_COMPONENT_TYPE_BYTE: return 1;
@@ -34,6 +53,24 @@ const unsigned char* accessorDataPtr(const tinygltf::Model& model, const tinyglt
     const tinygltf::BufferView& bv = model.bufferViews[acc.bufferView];
     const tinygltf::Buffer& buf = model.buffers[bv.buffer];
     return buf.data.data() + bv.byteOffset + acc.byteOffset;
+}
+
+bool readVec2(const tinygltf::Model& model, int accessorIndex, size_t vertexIndex, float out[2]) {
+    if (accessorIndex < 0)
+        return false;
+    const tinygltf::Accessor& acc = model.accessors[accessorIndex];
+    if (vertexIndex >= acc.count)
+        return false;
+    const unsigned char* base = accessorDataPtr(model, acc);
+    size_t stride = acc.ByteStride(model.bufferViews[acc.bufferView]);
+    if (stride == 0)
+        stride = componentTypeSize(acc.componentType) * tinygltf::GetNumComponentsInType(acc.type);
+    const unsigned char* p = base + vertexIndex * stride;
+    if (acc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+        std::memcpy(out, p, sizeof(float) * 2);
+        return true;
+    }
+    return false;
 }
 
 bool readVec3(const tinygltf::Model& model, int accessorIndex, size_t vertexIndex, float out[3]) {
@@ -135,6 +172,8 @@ std::shared_ptr<IAsset> GltfModelImporter::import(const std::string& path) {
     tinygltf::TinyGLTF loader;
     std::string err, warn;
 
+    const std::string gltfBaseDir = directoryOfFilePath(path);
+
     bool ok = false;
     if (path.size() >= 4 && path.compare(path.size() - 4, 4, ".glb") == 0) {
         ok = loader.LoadBinaryFromFile(&model, &err, &warn, path);
@@ -222,6 +261,16 @@ std::shared_ptr<IAsset> GltfModelImporter::import(const std::string& path) {
             if (nIt != prim.attributes.end())
                 nAcc = nIt->second;
 
+            int uvAcc = -1;
+            auto uvIt = prim.attributes.find("TEXCOORD_0");
+            if (uvIt != prim.attributes.end())
+                uvAcc = uvIt->second;
+
+            int tanAcc = -1;
+            auto tanIt = prim.attributes.find("TANGENT");
+            if (tanIt != prim.attributes.end())
+                tanAcc = tanIt->second;
+
             int jAcc = -1, wAcc = -1;
             auto jIt = prim.attributes.find("JOINTS_0");
             if (jIt != prim.attributes.end())
@@ -245,6 +294,30 @@ std::shared_ptr<IAsset> GltfModelImporter::import(const std::string& path) {
                 v.nx = n[0];
                 v.ny = n[1];
                 v.nz = n[2];
+
+                v.u = 0.0f;
+                v.v = 0.0f;
+                if (uvAcc >= 0) {
+                    float uv[2] = {0, 0};
+                    if (readVec2(model, uvAcc, vi, uv)) {
+                        v.u = uv[0];
+                        v.v = uv[1];
+                    }
+                }
+
+                v.tx = 1.0f;
+                v.ty = 0.0f;
+                v.tz = 0.0f;
+                v.tw = 1.0f;
+                if (tanAcc >= 0) {
+                    float t[4] = {1, 0, 0, 1};
+                    if (readVec4(model, tanAcc, vi, t)) {
+                        v.tx = t[0];
+                        v.ty = t[1];
+                        v.tz = t[2];
+                        v.tw = t[3];
+                    }
+                }
 
                 if (jAcc >= 0 && wAcc >= 0 && !modelAsset->skeleton.bones.empty()) {
                     int ji[4];
@@ -294,18 +367,40 @@ std::shared_ptr<IAsset> GltfModelImporter::import(const std::string& path) {
         }
     }
 
-    // Materials (paths left as URI strings for streaming cache)
     modelAsset->materials.resize(model.materials.size());
     for (size_t mi = 0; mi < model.materials.size(); ++mi) {
         const tinygltf::Material& mat = model.materials[mi];
-        auto baseColorIt = mat.values.find("baseColorTexture");
-        if (baseColorIt != mat.values.end()) {
-            int texIdx = baseColorIt->second.TextureIndex();
-            if (texIdx >= 0 && static_cast<size_t>(texIdx) < model.textures.size()) {
-                int src = model.textures[texIdx].source;
-                if (src >= 0 && static_cast<size_t>(src) < model.images.size()) {
-                    modelAsset->materials[mi].albedoTexture = model.images[src].uri;
-                }
+        Material& out = modelAsset->materials[mi];
+
+        int albedoTexIdx = -1;
+        if (mat.pbrMetallicRoughness.baseColorTexture.index >= 0)
+            albedoTexIdx = mat.pbrMetallicRoughness.baseColorTexture.index;
+        else {
+            auto extIt = mat.extensions.find("KHR_materials_pbrSpecularGlossiness");
+            if (extIt != mat.extensions.end() && extIt->second.IsObject() && extIt->second.Has("diffuseTexture")) {
+                const tinygltf::Value& dt = extIt->second.Get("diffuseTexture");
+                if (dt.IsObject() && dt.Has("index"))
+                    albedoTexIdx = dt.Get("index").GetNumberAsInt();
+            }
+        }
+        if (albedoTexIdx >= 0)
+            out.albedoTexture = imagePathFromTextureIndex(model, gltfBaseDir, albedoTexIdx);
+
+        if (mat.normalTexture.index >= 0)
+            out.normalTexture = imagePathFromTextureIndex(model, gltfBaseDir, mat.normalTexture.index);
+
+        if (mat.occlusionTexture.index >= 0)
+            out.occlusionTexture = imagePathFromTextureIndex(model, gltfBaseDir, mat.occlusionTexture.index);
+
+        if (mat.pbrMetallicRoughness.metallicRoughnessTexture.index >= 0)
+            out.metallicRoughnessTexture =
+                imagePathFromTextureIndex(model, gltfBaseDir, mat.pbrMetallicRoughness.metallicRoughnessTexture.index);
+
+        if (out.albedoTexture.empty()) {
+            auto legacy = mat.values.find("baseColorTexture");
+            if (legacy != mat.values.end()) {
+                int texIdx = legacy->second.TextureIndex();
+                out.albedoTexture = imagePathFromTextureIndex(model, gltfBaseDir, texIdx);
             }
         }
     }
