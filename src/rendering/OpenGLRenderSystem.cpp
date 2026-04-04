@@ -1,6 +1,8 @@
 #include "OpenGLRenderSystem.hpp"
 
+#include "../components/BoneInstanceComponent.hpp"
 #include "../components/CameraComponent.hpp"
+#include "../components/GameplayTags.hpp"
 #include "../components/TransformComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
 #include "../math/Vec3.hpp"
@@ -232,12 +234,7 @@ void OpenGLRenderSystem::drawPyramid(const Mat4& mvp, const Mat4& model, const f
     glBindVertexArray(0);
 }
 
-void OpenGLRenderSystem::renderFrame(
-    Registry& registry,
-    Entity cameraEntity,
-    Entity playerEntity,
-    const std::vector<Entity>& enemies,
-    Entity boneEntity) {
+void OpenGLRenderSystem::renderFrame(Registry& registry) {
     if (!m_window || !m_program)
         return;
 
@@ -249,13 +246,22 @@ void OpenGLRenderSystem::renderFrame(
     glClearColor(0.12f, 0.12f, 0.16f, 1.0f);
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    if (!registry.hasComponent<CameraComponent>(cameraEntity) ||
-        !registry.hasComponent<TransformComponent>(cameraEntity))
+    Entity cameraEntity = INVALID_ENTITY;
+    {
+        auto cams = registry.getEntitiesWith<CameraComponent, TransformComponent>();
+        for (Entity e : cams)
+        {
+            if (registry.getComponent<CameraComponent>(e).active)
+            {
+                cameraEntity = e;
+                break;
+            }
+        }
+    }
+    if (cameraEntity == INVALID_ENTITY)
         return;
 
     auto& cam = registry.getComponent<CameraComponent>(cameraEntity);
-    if (!cam.active)
-        return;
 
     auto worldTranslation = [&](Entity e) -> Vec3 {
         if (registry.hasComponent<WorldTransformComponent>(e)) {
@@ -304,14 +310,18 @@ void OpenGLRenderSystem::renderFrame(
     const float colEnemy[3] = {0.85f, 0.35f, 0.2f};
     const float colBone[3] = {0.9f, 0.85f, 0.2f};
 
-    drawAt(worldTranslation(playerEntity), 1.15f, colPlayer);
+    for (Entity e : registry.getEntitiesWith<PlayerTagComponent, TransformComponent>())
+    {
+        drawAt(worldTranslation(e), 1.15f, colPlayer);
+        break;
+    }
 
-    for (Entity e : enemies)
+    for (Entity e : registry.getEntitiesWith<EnemyTagComponent, TransformComponent>())
         drawAt(worldTranslation(e), 1.05f, colEnemy);
 
-    // Full bone pose matrix so rotation from AnimationSystem is visible (translation-only hid Y-axis swing).
-    if (boneEntity != INVALID_ENTITY && registry.hasComponent<WorldTransformComponent>(boneEntity)) {
-        const Mat4& w = registry.getComponent<WorldTransformComponent>(boneEntity).world;
+    for (Entity e : registry.getEntitiesWith<BoneInstanceComponent, WorldTransformComponent>())
+    {
+        const Mat4& w = registry.getComponent<WorldTransformComponent>(e).world;
         const float s = 0.45f;
         Mat4 model = mat4Mul(w, Mat4::FromScale({s, s, s}));
         Mat4 mvp = mat4Mul(vp, model);

@@ -18,6 +18,8 @@
 #include "../components/CollisionBoxComponent.hpp"
 #include "../components/RayComponent.hpp"
 #include "../components/RayHitComponent.hpp"
+#include "../components/GameplayTags.hpp"
+#include "../components/FacingRayDriverComponent.hpp"
 
 #include "../systems/TransformSystem.hpp"
 #include "../systems/SocketSystem.hpp"
@@ -28,6 +30,9 @@
 #include "../systems/RaycastSystem.hpp"
 #include "../systems/AnimationSystem.hpp"
 #include "../systems/BoneSyncSystem.hpp"
+#include "../systems/PositionToTransformSystem.hpp"
+#include "../systems/CollisionLastPositionSyncSystem.hpp"
+#include "../systems/FacingRaySystem.hpp"
 
 #include "../core/assets/AssetManager.hpp"
 #include "../core/assets/StreamingLoadService.hpp"
@@ -44,7 +49,7 @@
 #include "../components/BoneInstanceComponent.hpp"
 #include "../components/StreamingAnchorComponent.hpp"
 #include "../components/StreamableModelComponent.hpp"
-#include "../components/MeshRenderProxyComponent.hpp"
+#include "../components/SkinnedMeshComponent.hpp"
 
 #include "../rendering/OpenGLRenderSystem.hpp"
 
@@ -101,8 +106,8 @@ public:
                 }
             });
 
-        syncPositionToTransform();
-        syncCollisionLastPositions();
+        m_positionToTransformSystem.update(m_registry);
+        m_collisionLastPositionSyncSystem.seed(m_registry);
 
         createPlayerFacingRay();
 
@@ -190,7 +195,7 @@ public:
         m_elapsedTime += dt;
 
         updateActors(dt);
-        syncPositionToTransform();
+        m_positionToTransformSystem.update(m_registry);
 
         if (m_registry.hasComponent<TransformComponent>(m_player))
         {
@@ -208,14 +213,14 @@ public:
 
         m_collisionSystem.update(m_registry, m_spatialGrid);
 
-        updatePlayerFacingRay();
+        m_facingRaySystem.update(m_registry);
         m_raycastSystem.update(m_registry);
     }
 
     void onRender(double) override
     {
         printTerminalStatusTable();
-        m_gl.renderFrame(m_registry, m_camera, m_player, m_enemies, m_playerAnimBone);
+        m_gl.renderFrame(m_registry);
     }
 
     void onStop() override
@@ -258,7 +263,11 @@ private:
         m_registry.registerComponent<BoneInstanceComponent>();
         m_registry.registerComponent<StreamingAnchorComponent>();
         m_registry.registerComponent<StreamableModelComponent>();
-        m_registry.registerComponent<MeshRenderProxyComponent>();
+        m_registry.registerComponent<SkinnedMeshComponent>();
+
+        m_registry.registerComponent<PlayerTagComponent>();
+        m_registry.registerComponent<EnemyTagComponent>();
+        m_registry.registerComponent<FacingRayDriverComponent>();
     }
 
     void createPlayer()
@@ -280,6 +289,7 @@ private:
         }
 
         setupPlayerStateMachine(m_player);
+        m_registry.addComponent(m_player, PlayerTagComponent{});
     }
 
     void createEnemies()
@@ -308,6 +318,7 @@ private:
             }
 
             setupEnemyStateMachine(e);
+            m_registry.addComponent(e, EnemyTagComponent{static_cast<std::uint32_t>(i)});
             m_enemies.push_back(e);
         }
     }
@@ -472,30 +483,6 @@ private:
         }
     }
 
-    void syncPositionToTransform()
-    {
-        auto entities = m_registry.getEntitiesWith<Position, TransformComponent>();
-
-        for (auto e : entities)
-        {
-            auto& pos = m_registry.getComponent<Position>(e);
-            auto& transform = m_registry.getComponent<TransformComponent>(e);
-
-            transform.position = {pos.x, pos.y, pos.z};
-        }
-    }
-
-    void syncCollisionLastPositions()
-    {
-        auto entities = m_registry.getEntitiesWith<CollisionBoxComponent, TransformComponent>();
-        for (auto e : entities)
-        {
-            const auto& t   = m_registry.getComponent<TransformComponent>(e).position;
-            auto&       box = m_registry.getComponent<CollisionBoxComponent>(e);
-            box.lastPosition = t;
-        }
-    }
-
     bool isEnemyEntity(Entity e) const
     {
         for (Entity en : m_enemies)
@@ -543,51 +530,14 @@ private:
         });
         m_registry.addComponent(m_facingRayEntity, RayComponent{});
         m_registry.addComponent(m_facingRayEntity, RaycastHitComponent{});
-    }
-
-    void updatePlayerFacingRay()
-    {
-        auto&       rayTf    = m_registry.getComponent<TransformComponent>(m_facingRayEntity);
-        const auto& playerTf = m_registry.getComponent<TransformComponent>(m_player);
-        rayTf.rotation       = playerTf.rotation;
-
-        auto&       camComp = m_registry.getComponent<CameraComponent>(m_camera);
-        const auto& camTf   = m_registry.getComponent<TransformComponent>(m_camera);
-
-        Entity lookTarget = m_player;
-        if (camComp.enableLockOn && camComp.lockOnTarget != INVALID_ENTITY)
-        {
-            lookTarget = camComp.lockOnTarget;
-        }
-        else if (camComp.enableLookAt && camComp.lookAtTarget != INVALID_ENTITY)
-        {
-            lookTarget = camComp.lookAtTarget;
-        }
-
-        const auto& targetTf = m_registry.getComponent<TransformComponent>(lookTarget);
-        const float dx =
-            (targetTf.position.x + camComp.lookAtOffset.x) - camTf.position.x;
-        const float dz =
-            (targetTf.position.z + camComp.lookAtOffset.z) - camTf.position.z;
-        const float hLen = std::sqrt(dx * dx + dz * dz);
-
-        Vec3 dir{0.0f, 0.0f, -1.0f};
-        if (hLen > 1.0e-5f)
-        {
-            dir.x = dx / hLen;
-            dir.y = 0.0f;
-            dir.z = dz / hLen;
-        }
-
-        auto& ray = m_registry.getComponent<RayComponent>(m_facingRayEntity);
-        // Origin from attached transform (socket on player → follows movement).
-        ray.origin       = rayTf.position;
-        ray.direction    = normalize(dir);
-        ray.maxDistance  = m_rayMaxDistance;
-        ray.ignoreEntity = m_player;
-        // Only collide with layers for enemy "2" and "3" (bits 2 and 3); enemy "1" uses bit 1 only.
-        ray.layerMask = kFacingRayEnemyLayerMask;
-        ray.radius    = m_raySweepRadius;
+        FacingRayDriverComponent facingDrv{};
+        facingDrv.cameraEntity        = m_camera;
+        facingDrv.rotationAlignEntity = m_player;
+        facingDrv.ignoreEntity        = m_player;
+        facingDrv.maxDistance         = m_rayMaxDistance;
+        facingDrv.layerMask           = kFacingRayEnemyLayerMask;
+        facingDrv.sweepRadius         = m_raySweepRadius;
+        m_registry.addComponent(m_facingRayEntity, facingDrv);
     }
 
     void updateCameraInputs(double dt)
@@ -1257,6 +1207,9 @@ private:
     StreamingAssetCache m_streamingCache{m_assetManager};
 
     TransformSystem m_transformSystem;
+    PositionToTransformSystem       m_positionToTransformSystem;
+    CollisionLastPositionSyncSystem m_collisionLastPositionSyncSystem;
+    FacingRaySystem                 m_facingRaySystem;
     AnimationSystem m_animationSystem;
     BoneSyncSystem m_boneSyncSystem;
     SocketSystem m_socketSystem;

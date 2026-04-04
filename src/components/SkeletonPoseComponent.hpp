@@ -6,8 +6,17 @@
 #include <unordered_map>
 #include <vector>
 
-/// Sparse world matrices for synced bones only. `poseCache*` supports skipping work when
-/// animation times and skeleton root transform are unchanged (e.g. speeds set to 0).
+// -----------------------------------------------------------------------------
+// SkeletonPoseComponent — output of AnimationSystem: global bone matrices in
+// skeleton space (root-relative), keyed by bone index. `globalPoseByBoneIndex`
+// only contains entries for `syncBoneIndices` on SkeletonInstanceComponent.
+// Cache fields avoid resampling when time/root match; set `invalidatePoseCache`
+// on AnimationPlaybackComponent to force.
+//
+// Register: registry.registerComponent<SkeletonPoseComponent>();
+// Same entity as SkeletonInstanceComponent (skeleton root).
+// -----------------------------------------------------------------------------
+
 struct SkeletonPoseComponent {
     std::unordered_map<int, Mat4> globalPoseByBoneIndex;
 

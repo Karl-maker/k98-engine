@@ -1,15 +1,17 @@
 #pragma once
 
 #include "../ecs/Registry.hpp"
-#include "../ecs/Entity.hpp"
 #include "../math/Mat4.hpp"
 
 #include <cstdint>
-#include <vector>
 
 struct GLFWwindow;
 
-/// Forward+ambient lit pyramids at world positions; view matches camera eye → look target (see `CameraSystem`).
+// =============================================================================
+// OpenGLRenderSystem — minimal forward-lit debug draw. Queries the Registry each
+// frame (active camera, PlayerTag, EnemyTag, BoneInstance) so callers pass only
+// `registry`; add tags / components as your game grows without changing the API.
+// =============================================================================
 class OpenGLRenderSystem {
 public:
     bool init(int width, int height, const char* title);
@@ -18,12 +20,8 @@ public:
     void pollFramebufferSize(int& outW, int& outH) const;
     GLFWwindow* window() const { return m_window; }
 
-    void renderFrame(
-        Registry& registry,
-        Entity cameraEntity,
-        Entity playerEntity,
-        const std::vector<Entity>& enemies,
-        Entity boneEntity);
+    /// Reads `registry` only: first active `CameraComponent`, tagged player/enemies, bone instances.
+    void renderFrame(Registry& registry);
 
     bool shouldClose() const;
 

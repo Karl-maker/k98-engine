@@ -6,7 +6,7 @@
 #include "../components/SkeletonPoseComponent.hpp"
 #include "../components/AnimationPlaybackComponent.hpp"
 #include "../components/BoneInstanceComponent.hpp"
-#include "../components/MeshRenderProxyComponent.hpp"
+#include "../components/SkinnedMeshComponent.hpp"
 #include "../components/TransformComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
 #include "../math/Quat.hpp"
@@ -55,7 +55,7 @@ inline Entity spawnSkinnedHierarchy(
         if (outAllEntities)
             outAllEntities->push_back(me);
         int matIdx = model->meshes[mi].materialIndex;
-        registry.addComponent(me, MeshRenderProxyComponent{root, static_cast<int>(mi), matIdx});
+        registry.addComponent(me, SkinnedMeshComponent{root, static_cast<int>(mi), matIdx});
         registry.addComponent(me, TransformComponent{Vec3{}, Quat::Identity(), Vec3{1, 1, 1}, root});
         registry.addComponent(me, WorldTransformComponent{});
     }
@@ -74,8 +74,8 @@ inline void destroySkinnedSpawn(Registry& registry, const std::vector<Entity>& e
             registry.removeComponent<AnimationPlaybackComponent>(e);
         if (registry.hasComponent<BoneInstanceComponent>(e))
             registry.removeComponent<BoneInstanceComponent>(e);
-        if (registry.hasComponent<MeshRenderProxyComponent>(e))
-            registry.removeComponent<MeshRenderProxyComponent>(e);
+        if (registry.hasComponent<SkinnedMeshComponent>(e))
+            registry.removeComponent<SkinnedMeshComponent>(e);
         if (registry.hasComponent<TransformComponent>(e))
             registry.removeComponent<TransformComponent>(e);
         if (registry.hasComponent<WorldTransformComponent>(e))

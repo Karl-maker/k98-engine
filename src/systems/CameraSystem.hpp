@@ -1,5 +1,21 @@
 #pragma once
 
+// =============================================================================
+// CameraSystem — updates camera TransformComponent from orbit / follow / look-at
+// and writes CameraComponent::viewMatrix (camera *world* matrix, inverse = view).
+//
+// Registration:
+//   registry.registerComponent<CameraComponent>();
+//   registry.registerComponent<TransformComponent>();
+//   optional: WorldTransformComponent for follow-from-socket mode
+//
+// Example:
+//   CameraSystem cams;
+//   cams.update(registry, dt);
+//
+// Feed input via CameraComponent::inputDeltaX/Y (e.g. from Control / mouse).
+// =============================================================================
+
 #include "../ecs/Registry.hpp"
 #include "../components/CameraComponent.hpp"
 #include "../components/TransformComponent.hpp"

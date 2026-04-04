@@ -2,8 +2,15 @@
 
 #include "../ecs/Entity.hpp"
 
-/// Sparse bone entity: `AnimationSystem` fills `SkeletonPoseComponent` on `skeletonRoot`;
-/// `BoneSyncSystem` writes world = root TRS × sampled bone matrix so the bone follows the character.
+// -----------------------------------------------------------------------------
+// BoneInstanceComponent — optional entity representing one bone for gameplay /
+// debug draw. `skeletonRoot` points at the entity that has SkeletonPoseComponent;
+// `boneIndex` indexes into that skeleton.
+//
+// Register: registry.registerComponent<BoneInstanceComponent>();
+// Setup: add WorldTransformComponent on the bone entity; run BoneSyncSystem after AnimationSystem.
+// -----------------------------------------------------------------------------
+
 struct BoneInstanceComponent {
     Entity skeletonRoot = INVALID_ENTITY;
     int boneIndex = -1;

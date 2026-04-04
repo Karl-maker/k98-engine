@@ -1,5 +1,17 @@
 #pragma once
 
+// =============================================================================
+// BoneSyncSystem — copies sparse bone global matrices from SkeletonPoseComponent
+// (on skeleton root) into BoneInstance entities’ WorldTransformComponent, multiplied
+// by the root’s world TRS so bones follow the character.
+//
+// Registration:
+//   BoneInstanceComponent, SkeletonPoseComponent, TransformComponent (root),
+//   WorldTransformComponent (bone entities)
+//
+// Order: after AnimationSystem.
+// =============================================================================
+
 #include "../ecs/Registry.hpp"
 #include "../components/BoneInstanceComponent.hpp"
 #include "../components/SkeletonPoseComponent.hpp"
@@ -7,7 +19,6 @@
 #include "../components/WorldTransformComponent.hpp"
 #include "../math/Mat4.hpp"
 
-/// After AnimationSystem: pose entries are skeleton-local; multiply by root world TRS so bones follow the player.
 class BoneSyncSystem {
 public:
     void update(Registry& registry) {

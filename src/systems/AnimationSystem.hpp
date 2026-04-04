@@ -1,5 +1,24 @@
 #pragma once
 
+// =============================================================================
+// AnimationSystem — advances AnimationPlaybackComponent time, samples clips into
+// SkeletonPoseComponent::globalPoseByBoneIndex (skeleton-local matrices).
+//
+// Registration:
+//   registry.registerComponent<SkeletonInstanceComponent>();
+//   registry.registerComponent<SkeletonPoseComponent>();
+//   registry.registerComponent<AnimationPlaybackComponent>();
+//   registry.registerComponent<TransformComponent>();
+//
+// Example:
+//   AnimationSystem anim;
+//   anim.update(registry, dt);
+//
+// Order: after PositionToTransformSystem (root transform feeds pose cache); before BoneSyncSystem.
+//
+// Clip changes / crossfades: see `AnimationPlaybackComponent.hpp` (“HOW TO SWITCH ANIMATIONS”).
+// =============================================================================
+
 #include "../ecs/Registry.hpp"
 #include "../components/SkeletonInstanceComponent.hpp"
 #include "../components/SkeletonPoseComponent.hpp"

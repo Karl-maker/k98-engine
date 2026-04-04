@@ -5,6 +5,15 @@
 #include <string>
 #include <vector>
 
+// -----------------------------------------------------------------------------
+// StreamableModelComponent — async model load request. `modelPath` is loaded when
+// StreamingLoadService decides the anchor is in range; `spawnedEntities` holds
+// created entities (root first) for teardown on unload.
+//
+// Register: registry.registerComponent<StreamableModelComponent>();
+// Works with StreamingAnchorComponent + StreamingLoadService (see that service).
+// -----------------------------------------------------------------------------
+
 enum class StreamableLoadState : std::uint8_t {
     Unloaded,
     Loading,
@@ -12,7 +21,6 @@ enum class StreamableLoadState : std::uint8_t {
     Unloading
 };
 
-/// Requests async load of a model path when anchor enters load radius.
 struct StreamableModelComponent {
     std::string modelPath;
     StreamableLoadState state = StreamableLoadState::Unloaded;
