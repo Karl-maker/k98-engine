@@ -51,6 +51,7 @@ include_directories(${tinygltf_SOURCE_DIR})
 add_executable(game_engine
   src/main.cpp
   src/utils/math.cpp
+  src/core/ThreadService.cpp
   src/core/GameLoop.cpp
   src/statemachine/StateMachine.cpp
   src/core/assets/importers/GltfModelImporter.cpp

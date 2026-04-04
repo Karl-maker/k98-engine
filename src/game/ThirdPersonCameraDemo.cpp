@@ -37,6 +37,8 @@
 #include "../core/assets/AssetManager.hpp"
 #include "../core/assets/StreamingLoadService.hpp"
 #include "../core/assets/StreamingAssetCache.hpp"
+#include "../core/SystemUpdateGroups.hpp"
+#include "../core/ThreadService.hpp"
 #include "../core/assets/importers/GltfModelImporter.hpp"
 #include "../core/assets/AnimationClipData.hpp"
 #include "../core/assets/ModelAsset.hpp"
@@ -72,6 +74,9 @@ public:
     void onStart() override
     {
         std::cout << "Third Person Camera Demo Started\n";
+
+        m_threadService.configure({});
+        m_threadService.start();
 
         registerComponents();
 
@@ -194,6 +199,7 @@ public:
     {
         m_elapsedTime += dt;
 
+        // Gameplay / state integration (runs before transforms propagate).
         updateActors(dt);
         m_positionToTransformSystem.update(m_registry);
 
@@ -202,19 +208,10 @@ public:
             m_streamingCache.setViewerPosition(m_registry.getComponent<TransformComponent>(m_player).position);
         }
 
-        // Order matters: streaming -> animation -> bone sync -> hierarchy transforms -> sockets
-        m_streamingLoadService.update(m_registry);
-        m_animationSystem.update(m_registry, static_cast<float>(dt));
-        m_boneSyncSystem.update(m_registry);
-        m_transformSystem.update(m_registry);
-        m_socketSystem.update(m_registry);
-        m_attachmentSystem.update(m_registry);
-        m_cameraSystem.update(m_registry, static_cast<float>(dt));
-
-        m_collisionSystem.update(m_registry, m_spatialGrid);
-
-        m_facingRaySystem.update(m_registry);
-        m_raycastSystem.update(m_registry);
+        // Phased systems — order: Environment → Simulation → Physics (SystemUpdateGroups.hpp).
+        updateEnvironmentGroup(dt);
+        updateSimulationGroup(dt);
+        updatePhysicsGroup(dt);
     }
 
     void onRender(double) override
@@ -225,6 +222,8 @@ public:
 
     void onStop() override
     {
+        m_threadService.shutdown();
+
         if (m_gl.window())
             glfwSetInputMode(m_gl.window(), GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         m_gl.shutdown();
@@ -404,6 +403,34 @@ private:
     // -------------------------------------------------
     // Update
     // -------------------------------------------------
+
+    // SystemUpdateGroup::Environment — streaming anchors, proximity loads, completion → ECS spawn (main thread).
+    void updateEnvironmentGroup(double dt)
+    {
+        (void)dt;
+        m_streamingLoadService.update(m_registry);
+    }
+
+    // SystemUpdateGroup::Simulation — animation, hierarchy, camera (after Position → Transform).
+    void updateSimulationGroup(double dt)
+    {
+        const float fdt = static_cast<float>(dt);
+        m_animationSystem.update(m_registry, fdt);
+        m_boneSyncSystem.update(m_registry);
+        m_transformSystem.update(m_registry);
+        m_socketSystem.update(m_registry);
+        m_attachmentSystem.update(m_registry);
+        m_cameraSystem.update(m_registry, fdt);
+    }
+
+    // SystemUpdateGroup::Physics — collision, facing ray, raycast (after transforms and camera).
+    void updatePhysicsGroup(double dt)
+    {
+        (void)dt;
+        m_collisionSystem.update(m_registry, m_spatialGrid);
+        m_facingRaySystem.update(m_registry);
+        m_raycastSystem.update(m_registry);
+    }
 
     void updateActors(double dt)
     {
@@ -1203,7 +1230,8 @@ private:
     std::unique_ptr<Control> m_control;
 
     AssetManager m_assetManager;
-    StreamingLoadService m_streamingLoadService{m_assetManager};
+    ThreadService m_threadService;
+    StreamingLoadService m_streamingLoadService{m_assetManager, &m_threadService};
     StreamingAssetCache m_streamingCache{m_assetManager};
 
     TransformSystem m_transformSystem;

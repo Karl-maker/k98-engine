@@ -9,6 +9,7 @@
 #include "../../components/WorldTransformComponent.hpp"
 #include "../../ecs/Registry.hpp"
 #include "../../utils/ProximityUtils.hpp"
+#include "../ThreadService.hpp"
 
 #include <chrono>
 #include <future>
@@ -23,10 +24,13 @@ struct PendingModelLoad {
 };
 
 /// Single-threaded completion: poll futures on main thread; spawn ECS when load finishes.
+/// Loads are dispatched with ThreadService::submit when `threads` is non-null and running;
+/// otherwise std::async is used.
 class StreamingLoadService {
 public:
-    explicit StreamingLoadService(AssetManager& assets)
-        : m_assets(assets) {}
+    explicit StreamingLoadService(AssetManager& assets, ThreadService* threads = nullptr)
+        : m_assets(assets)
+        , m_threads(threads) {}
 
     void setTrackedBoneNames(std::vector<std::string> names) {
         m_trackedBones = std::move(names);
@@ -68,9 +72,14 @@ private:
                 sm.state = StreamableLoadState::Loading;
                 PendingModelLoad pending;
                 pending.streamableEntity = e;
-                pending.future = std::async(std::launch::async, [this, path = sm.modelPath]() {
+                auto loadTask = [this, path = sm.modelPath]() {
                     return std::static_pointer_cast<ModelAsset>(m_assets.load(path));
-                });
+                };
+                if (m_threads && m_threads->isRunning()) {
+                    pending.future = m_threads->submit(std::move(loadTask));
+                } else {
+                    pending.future = std::async(std::launch::async, std::move(loadTask));
+                }
                 std::lock_guard<std::mutex> lock(m_mutex);
                 m_pending.push_back(std::move(pending));
             }
@@ -115,6 +124,7 @@ private:
     }
 
     AssetManager& m_assets;
+    ThreadService* m_threads = nullptr;
     std::vector<std::string> m_trackedBones;
     std::vector<PendingModelLoad> m_pending;
     std::mutex m_mutex;
