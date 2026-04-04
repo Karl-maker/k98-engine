@@ -76,6 +76,10 @@ public:
         syncCollisionLastPositions();
 
         createPlayerFacingRay();
+
+        m_transformSystem.update(m_registry);
+        m_socketSystem.update(m_registry);
+        m_attachmentSystem.update(m_registry);
     }
 
     void onInput() override
@@ -408,16 +412,37 @@ private:
 
     void createPlayerFacingRay()
     {
+        // Chest-height socket on the player; world pose updated by SocketSystem from player WorldTransform.
+        m_playerRaySocket = m_registry.createEntity();
+        m_registry.addComponent(m_playerRaySocket, SocketComponent{
+            m_player,
+            {0.0f, m_collisionHalfY * 0.35f, 0.0f},
+            {},
+            {}
+        });
+
         m_facingRayEntity = m_registry.createEntity();
+        m_registry.addComponent(m_facingRayEntity, TransformComponent{});
+        m_registry.addComponent(m_facingRayEntity, AttachComponent{
+            m_player,
+            m_playerRaySocket,
+            {0.0f, 0.0f, 0.0f},
+            {},
+            true,
+            false
+        });
         m_registry.addComponent(m_facingRayEntity, RayComponent{});
         m_registry.addComponent(m_facingRayEntity, RaycastHitComponent{});
     }
 
     void updatePlayerFacingRay()
     {
-        auto&       playerPos = m_registry.getComponent<Position>(m_player);
-        auto&       camComp   = m_registry.getComponent<CameraComponent>(m_camera);
-        const auto& camTf     = m_registry.getComponent<TransformComponent>(m_camera);
+        auto&       rayTf    = m_registry.getComponent<TransformComponent>(m_facingRayEntity);
+        const auto& playerTf = m_registry.getComponent<TransformComponent>(m_player);
+        rayTf.rotation       = playerTf.rotation;
+
+        auto&       camComp = m_registry.getComponent<CameraComponent>(m_camera);
+        const auto& camTf   = m_registry.getComponent<TransformComponent>(m_camera);
 
         Entity lookTarget = m_player;
         if (camComp.enableLockOn && camComp.lockOnTarget != INVALID_ENTITY)
@@ -444,12 +469,9 @@ private:
             dir.z = dz / hLen;
         }
 
-        // Horizontal ray must pass through character AABBs: boxes are transform.y ± halfY.
-        // Eye height 1.0+ was above enemy/player boxes (halfY=0.55 → max y≈0.55), so slab Y never hit.
-        const float rayY = playerPos.y + m_collisionHalfY * 0.35f;
-
         auto& ray = m_registry.getComponent<RayComponent>(m_facingRayEntity);
-        ray.origin       = {playerPos.x, rayY, playerPos.z};
+        // Origin from attached transform (socket on player → follows movement).
+        ray.origin       = rayTf.position;
         ray.direction    = normalize(dir);
         ray.maxDistance  = m_rayMaxDistance;
         ray.ignoreEntity = m_player;
@@ -927,6 +949,7 @@ private:
     Entity m_player{};
     Entity m_camera{};
     Entity m_cameraSocket{};
+    Entity m_playerRaySocket{INVALID_ENTITY};
     Entity m_facingRayEntity{INVALID_ENTITY};
 
     std::vector<Entity> m_enemies;
