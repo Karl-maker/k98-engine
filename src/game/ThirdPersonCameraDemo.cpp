@@ -16,6 +16,8 @@
 #include "../components/CameraComponent.hpp"
 
 #include "../components/CollisionBoxComponent.hpp"
+#include "../components/RayComponent.hpp"
+#include "../components/RayHitComponent.hpp"
 
 #include "../systems/TransformSystem.hpp"
 #include "../systems/SocketSystem.hpp"
@@ -23,6 +25,7 @@
 #include "../systems/CameraSystem.hpp"
 #include "../systems/SpacialGridSystem.hpp"
 #include "../systems/CollisionSystem.hpp"
+#include "../systems/RaycastSystem.hpp"
 
 #include <iostream>
 #include <iomanip>
@@ -71,6 +74,8 @@ public:
 
         syncPositionToTransform();
         syncCollisionLastPositions();
+
+        createPlayerFacingRay();
     }
 
     void onInput() override
@@ -97,6 +102,9 @@ public:
         m_cameraSystem.update(m_registry, static_cast<float>(dt));
 
         m_collisionSystem.update(m_registry, m_spatialGrid);
+
+        updatePlayerFacingRay();
+        m_raycastSystem.update(m_registry);
     }
 
     void onRender(double) override
@@ -138,6 +146,8 @@ private:
         m_registry.registerComponent<AttachComponent>();
         m_registry.registerComponent<CameraComponent>();
         m_registry.registerComponent<CollisionBoxComponent>();
+        m_registry.registerComponent<RayComponent>();
+        m_registry.registerComponent<RaycastHitComponent>();
     }
 
     void createPlayer()
@@ -384,6 +394,67 @@ private:
         return false;
     }
 
+    int enemyIndex1Based(Entity e) const
+    {
+        for (std::size_t i = 0; i < m_enemies.size(); ++i)
+        {
+            if (m_enemies[i] == e)
+            {
+                return static_cast<int>(i) + 1;
+            }
+        }
+        return -1;
+    }
+
+    void createPlayerFacingRay()
+    {
+        m_facingRayEntity = m_registry.createEntity();
+        m_registry.addComponent(m_facingRayEntity, RayComponent{});
+        m_registry.addComponent(m_facingRayEntity, RaycastHitComponent{});
+    }
+
+    void updatePlayerFacingRay()
+    {
+        auto&       playerPos = m_registry.getComponent<Position>(m_player);
+        auto&       camComp   = m_registry.getComponent<CameraComponent>(m_camera);
+        const auto& camTf     = m_registry.getComponent<TransformComponent>(m_camera);
+
+        Entity lookTarget = m_player;
+        if (camComp.enableLockOn && camComp.lockOnTarget != INVALID_ENTITY)
+        {
+            lookTarget = camComp.lockOnTarget;
+        }
+        else if (camComp.enableLookAt && camComp.lookAtTarget != INVALID_ENTITY)
+        {
+            lookTarget = camComp.lookAtTarget;
+        }
+
+        const auto& targetTf = m_registry.getComponent<TransformComponent>(lookTarget);
+        const float dx =
+            (targetTf.position.x + camComp.lookAtOffset.x) - camTf.position.x;
+        const float dz =
+            (targetTf.position.z + camComp.lookAtOffset.z) - camTf.position.z;
+        const float hLen = std::sqrt(dx * dx + dz * dz);
+
+        Vec3 dir{0.0f, 0.0f, -1.0f};
+        if (hLen > 1.0e-5f)
+        {
+            dir.x = dx / hLen;
+            dir.y = 0.0f;
+            dir.z = dz / hLen;
+        }
+
+        // Horizontal ray must pass through character AABBs: boxes are transform.y ± halfY.
+        // Eye height 1.0+ was above enemy/player boxes (halfY=0.55 → max y≈0.55), so slab Y never hit.
+        const float rayY = playerPos.y + m_collisionHalfY * 0.35f;
+
+        auto& ray = m_registry.getComponent<RayComponent>(m_facingRayEntity);
+        ray.origin       = {playerPos.x, rayY, playerPos.z};
+        ray.direction    = normalize(dir);
+        ray.maxDistance  = m_rayMaxDistance;
+        ray.ignoreEntity = m_player;
+    }
+
     void updateCameraInputs(double dt)
     {
         auto& cam = m_registry.getComponent<CameraComponent>(m_camera);
@@ -448,7 +519,24 @@ private:
                   << m_collisionHalfY << ", "
                   << m_collisionHalfZ << ")  grid cell: " << m_spatialGrid.cellSize << "\n";
         std::cout << "  Player–enemy enters: " << m_playerEnemyCollisionEnters
-                  << "  overlapping: " << (playerEnemyOverlap ? "yes" : "no") << "\n\n";
+                  << "  overlapping: " << (playerEnemyOverlap ? "yes" : "no") << "\n";
+
+        {
+            const auto& rayHit = m_registry.getComponent<RaycastHitComponent>(m_facingRayEntity);
+            std::cout << "  Facing ray: ";
+            if (rayHit.hit && isEnemyEntity(rayHit.entity))
+            {
+                const int slot = enemyIndex1Based(rayHit.entity);
+                std::cout << "enemy #" << slot << "  dist " << std::fixed << std::setprecision(2)
+                          << rayHit.distance << std::defaultfloat << "\n";
+            }
+            else
+            {
+                std::cout << "no enemy in view\n";
+            }
+        }
+
+        std::cout << "\n";
     }
 
     void printActors()
@@ -833,11 +921,13 @@ private:
     AttachmentSystem m_attachmentSystem;
     CameraSystem m_cameraSystem;
     SpatialGridSystem m_spatialGrid;
-    CollisionSystem m_collisionSystem;
+    RaycastSystem     m_raycastSystem{m_spatialGrid};
+    CollisionSystem   m_collisionSystem;
 
     Entity m_player{};
     Entity m_camera{};
     Entity m_cameraSocket{};
+    Entity m_facingRayEntity{INVALID_ENTITY};
 
     std::vector<Entity> m_enemies;
 
@@ -863,4 +953,6 @@ private:
     const float m_collisionHalfZ = 0.4f;
 
     std::uint64_t m_playerEnemyCollisionEnters = 0;
+
+    const float m_rayMaxDistance = 40.0f;
 };

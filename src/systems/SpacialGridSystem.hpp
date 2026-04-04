@@ -3,6 +3,8 @@
 #include <vector>
 #include <unordered_set>
 
+#include <cmath>
+
 #include "../math/Vec3.hpp"
 #include "../ecs/Registry.hpp"
 #include "../components/TransformComponent.hpp"
@@ -78,10 +80,12 @@ private:
 
     GridKey getKey(const Vec3& pos)
     {
+        // Floor so negative world coordinates map to correct negative cell indices
+        // (truncation toward zero would put small negatives in cell 0 and break min/max loops).
         return {
-            (int)(pos.x / cellSize),
-            (int)(pos.y / cellSize),
-            (int)(pos.z / cellSize)
+            static_cast<int>(std::floor(pos.x / cellSize)),
+            static_cast<int>(std::floor(pos.y / cellSize)),
+            static_cast<int>(std::floor(pos.z / cellSize))
         };
     }
 

@@ -27,3 +27,16 @@ inline float lengthSquared(const Vec3& v) {
 inline Vec3 operator*(const Vec3& v, float s) {
     return {v.x * s, v.y * s, v.z * s};
 }
+
+inline Vec3 normalize(const Vec3& v)
+{
+    float lenSq = lengthSquared(v);
+
+    // avoid division by zero (or very small values)
+    if (lenSq < 1e-8f)
+        return Vec3{0.0f, 0.0f, 0.0f};
+
+    float invLen = 1.0f / std::sqrt(lenSq);
+
+    return v * invLen;
+}
