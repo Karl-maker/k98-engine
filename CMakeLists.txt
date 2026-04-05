@@ -1,9 +1,26 @@
 cmake_minimum_required(VERSION 3.20)
-project(GameEngine)
+project(GameEngine LANGUAGES CXX C)
 
 set(CMAKE_CXX_STANDARD 17)
 
 include(FetchContent)
+
+# libwebp: decode .webp HDRI / textures (stb_image does not support WebP).
+FetchContent_Declare(
+  libwebp
+  URL https://github.com/webmproject/libwebp/archive/refs/tags/v1.4.0.zip
+)
+set(WEBP_BUILD_ANIM_UTILS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_CWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_DWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_GIF2WEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_IMG2WEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_VWEBP OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPINFO OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_EXTRAS OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_WEBPMUX OFF CACHE BOOL "" FORCE)
+set(WEBP_BUILD_LIBWEBPMUX OFF CACHE BOOL "" FORCE)
+FetchContent_MakeAvailable(libwebp)
 
 FetchContent_Declare(
   googletest
@@ -70,9 +87,9 @@ if(NOT APPLE)
   target_sources(game_engine PRIVATE ${glew_SOURCE_DIR}/src/glew.c)
   target_compile_definitions(game_engine PRIVATE GLEW_STATIC)
   find_package(OpenGL REQUIRED)
-  target_link_libraries(game_engine PRIVATE Threads::Threads glfw OpenGL::GL ${CMAKE_DL_LIBS})
+  target_link_libraries(game_engine PRIVATE Threads::Threads glfw OpenGL::GL webp ${CMAKE_DL_LIBS})
 else()
-  target_link_libraries(game_engine PRIVATE Threads::Threads glfw "-framework OpenGL")
+  target_link_libraries(game_engine PRIVATE Threads::Threads glfw webp "-framework OpenGL")
 endif()
 
 # Tests

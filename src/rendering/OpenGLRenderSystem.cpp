@@ -1,6 +1,8 @@
 #include "OpenGLRenderSystem.hpp"
 
 #include "../core/assets/ModelAsset.hpp"
+#include "../ecs/Entity.hpp"
+#include "../ecs/Registry.hpp"
 #include "../math/Mat4.hpp"
 #include "../math/Vertex.hpp"
 #include "../components/BoneInstanceComponent.hpp"
@@ -10,6 +12,8 @@
 #include "../components/SocketComponent.hpp"
 #include "../components/StaticMeshComponent.hpp"
 #include "../components/TransformComponent.hpp"
+#include "../components/HdriEnvironmentComponent.hpp"
+#include "../components/LightingComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
 #include "../math/Vec3.hpp"
 
@@ -25,14 +29,121 @@
 #endif
 
 #include <algorithm>
-#include <cstddef>
 #include <cmath>
+#include <cctype>
+#include <cstddef>
 #include <cstring>
+#include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
 #include "stb_image.h"
+#include <webp/decode.h>
+
+namespace {
+
+std::string hdriPathLowerExt(const std::string& path) {
+    const auto dot = path.find_last_of('.');
+    if (dot == std::string::npos)
+        return {};
+    std::string ext = path.substr(dot);
+    for (char& c : ext)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return ext;
+}
+
+std::string resolveHdriFilesystemPath(const std::string& path) {
+    if (path.empty())
+        return {};
+    {
+        std::ifstream test(path, std::ios::binary);
+        if (test.good())
+            return path;
+    }
+#ifdef GAME_ENGINE_PROJECT_ROOT
+    std::string root = GAME_ENGINE_PROJECT_ROOT;
+    if (!root.empty() && root.back() != '/')
+        root += '/';
+    const std::string combined = root + path;
+    {
+        std::ifstream test(combined, std::ios::binary);
+        if (test.good())
+            return combined;
+    }
+#endif
+    return path;
+}
+
+bool readFileAllBytes(const std::string& path, std::vector<unsigned char>& out) {
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f)
+        return false;
+    const std::streamsize sz = f.tellg();
+    if (sz <= 0)
+        return false;
+    f.seekg(0);
+    out.resize(static_cast<size_t>(sz));
+    return static_cast<bool>(f.read(reinterpret_cast<char*>(out.data()), sz));
+}
+
+GLuint uploadRgbaEquirect(unsigned char* rgba, int w, int h) {
+    if (!rgba || w <= 0 || h <= 0)
+        return 0;
+    GLuint tex = 0;
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    return tex;
+}
+
+/// Loads equirectangular RGBA; supports .webp (libwebp) and formats stb_image handles (png, jpg, …).
+GLuint loadEquirectTextureFromFile(const std::string& pathIn, std::string& outResolved, std::string& errOut) {
+    errOut.clear();
+    outResolved = resolveHdriFilesystemPath(pathIn);
+    std::vector<unsigned char> bytes;
+    if (!readFileAllBytes(outResolved, bytes)) {
+        errOut = "HDRI: could not read file: " + outResolved;
+        return 0;
+    }
+    const std::string ext = hdriPathLowerExt(outResolved);
+    int w = 0;
+    int h = 0;
+    unsigned char* rgba = nullptr;
+
+    if (ext == ".webp") {
+        rgba = WebPDecodeRGBA(bytes.data(), bytes.size(), &w, &h);
+        if (!rgba) {
+            errOut = "HDRI: WebP decode failed: " + outResolved;
+            return 0;
+        }
+        GLuint t = uploadRgbaEquirect(rgba, w, h);
+        WebPFree(rgba);
+        if (!t)
+            errOut = "HDRI: OpenGL upload failed: " + outResolved;
+        return t;
+    }
+
+    int n = 0;
+    rgba = stbi_load_from_memory(bytes.data(), static_cast<int>(bytes.size()), &w, &h, &n, 4);
+    if (!rgba) {
+        errOut = std::string("HDRI: stbi_load failed (") + (stbi_failure_reason() ? stbi_failure_reason() : "?") + "): " +
+            outResolved;
+        return 0;
+    }
+    GLuint t = uploadRgbaEquirect(rgba, w, h);
+    stbi_image_free(rgba);
+    if (!t)
+        errOut = "HDRI: OpenGL upload failed: " + outResolved;
+    return t;
+}
+
+} // namespace
 
 static const char* kVertSrc = R"(
 #version 330 core
@@ -99,13 +210,26 @@ uniform sampler2D uMetallicRoughness;
 uniform int uUseNormalMap;
 uniform int uUseOcclusion;
 uniform int uUseMetallicRoughness;
-uniform vec3 uLightDir;
 uniform vec3 uAmbient;
+uniform vec3 uCameraPos;
 uniform vec3 uTint;
+uniform int uLightCount;
+#define MAX_LIGHTS 8
+uniform vec4 uLightPosType[MAX_LIGHTS];
+uniform vec4 uLightDirRange[MAX_LIGHTS];
+uniform vec4 uLightColorInt[MAX_LIGHTS];
+uniform vec4 uLightSpot[MAX_LIGHTS];
+uniform vec4 uLightAttenSpec[MAX_LIGHTS];
+uniform vec2 uRim;
+uniform sampler2D uEnvMap;
+uniform int uUseHdri;
+uniform float uHdriIntensity;
+uniform float uHdriRotY;
+uniform float uHdriDiffuseW;
+uniform float uHdriSpecW;
 out vec4 FragColor;
 void main() {
     vec4 tex = texture(uAlbedo, vUV);
-    // Opaque albedos often have A=0 or missing alpha; treat near-zero A as opaque so we don't discard the whole mesh.
     float a = tex.a < 0.04f ? 1.0f : tex.a;
     vec4 base = vec4(tex.rgb, a) * vec4(uTint, 1.0);
     if (base.a < 0.35)
@@ -124,11 +248,89 @@ void main() {
     float rough = 0.5;
     if (uUseMetallicRoughness != 0)
         rough = texture(uMetallicRoughness, vUV).g;
-    vec3 L = normalize(-uLightDir);
-    float ndl = max(dot(N, L), 0.0);
-    float diffuseTerm = mix(0.45, 0.65, rough);
+
+    vec3 V = normalize(uCameraPos - vWorldPos);
+    vec3 diffAccum = vec3(0.0);
+    vec3 specAccum = vec3(0.0);
+    int lc = min(uLightCount, MAX_LIGHTS);
+    for (int i = 0; i < lc; ++i) {
+        int tp = int(uLightPosType[i].w + 0.5);
+        vec3 lcCol = uLightColorInt[i].rgb * uLightColorInt[i].a;
+        float cAt = uLightAttenSpec[i].x;
+        float specPow = uLightAttenSpec[i].y;
+        float specInt = uLightAttenSpec[i].z;
+        float halfL = uLightAttenSpec[i].w;
+        float lin = uLightSpot[i].z;
+        float quad = uLightSpot[i].w;
+        float innerC = uLightSpot[i].x;
+        float outerC = uLightSpot[i].y;
+
+        vec3 forward = uLightDirRange[i].xyz;
+        if (dot(forward, forward) > 1e-8)
+            forward = normalize(forward);
+        else
+            forward = vec3(0.0, -1.0, 0.0);
+        float range = uLightDirRange[i].w;
+
+        vec3 L;
+        float att = 1.0;
+        float spotF = 1.0;
+
+        if (tp == 0) {
+            L = normalize(-forward);
+        } else {
+            vec3 lp = uLightPosType[i].xyz;
+            vec3 toL = lp - vWorldPos;
+            float dist = length(toL);
+            L = toL / max(dist, 1e-4);
+            att = 1.0 / (cAt + lin * dist + quad * dist * dist);
+            att *= clamp(1.0 - dist / max(range, 1e-2), 0.0, 1.0);
+            if (tp == 2) {
+                vec3 fromLight = -L;
+                float cang = dot(fromLight, forward);
+                spotF = smoothstep(outerC, innerC, cang);
+            }
+        }
+
+        float ndl = max(dot(N, L), 0.0);
+        if (halfL > 0.5)
+            ndl = ndl * 0.5 + 0.5;
+        float diffTerm = mix(0.45, 0.65, rough);
+        diffAccum += lcCol * (ndl * diffTerm) * att * spotF;
+
+        vec3 H = normalize(L + V);
+        float ndh = max(dot(N, H), 0.0);
+        float spec = pow(ndh, specPow) * specInt * (1.0 - rough * 0.65);
+        specAccum += lcCol * spec * att * spotF;
+    }
+
     vec3 ambLit = uAmbient * occ;
-    vec3 c = base.rgb * (ambLit + vec3(diffuseTerm) * ndl);
+    vec3 rimCol = vec3(0.0);
+    if (uRim.y > 0.001) {
+        float rim = pow(1.0 - max(dot(N, V), 0.0), max(uRim.x, 0.5));
+        rimCol = base.rgb * rim * uRim.y;
+    }
+    vec3 c = base.rgb * ambLit + base.rgb * diffAccum + specAccum + rimCol;
+    if (uUseHdri != 0) {
+        float cR = cos(uHdriRotY);
+        float sR = sin(uHdriRotY);
+        vec3 envDirDiff = N;
+        float dx = cR * envDirDiff.x - sR * envDirDiff.z;
+        float dz = sR * envDirDiff.x + cR * envDirDiff.z;
+        vec3 dDiff = normalize(vec3(dx, envDirDiff.y, dz));
+        float uD = atan(dDiff.z, dDiff.x) / 6.28318530718 + 0.5;
+        float vD = acos(clamp(dDiff.y, -1.0, 1.0)) / 3.14159265;
+        vec3 envDiff = texture(uEnvMap, vec2(uD, vD)).rgb;
+        vec3 Renv = reflect(-V, N);
+        float rx = cR * Renv.x - sR * Renv.z;
+        float rz = sR * Renv.x + cR * Renv.z;
+        vec3 dSpec = normalize(vec3(rx, Renv.y, rz));
+        float uS = atan(dSpec.z, dSpec.x) / 6.28318530718 + 0.5;
+        float vS = acos(clamp(dSpec.y, -1.0, 1.0)) / 3.14159265;
+        vec3 envSpec = texture(uEnvMap, vec2(uS, vS)).rgb;
+        c += base.rgb * envDiff * uHdriIntensity * uHdriDiffuseW * occ;
+        c += envSpec * uHdriIntensity * uHdriSpecW * (1.0 - rough * 0.85);
+    }
     FragColor = vec4(c, base.a);
 }
 )";
@@ -543,7 +745,181 @@ bool OpenGLRenderSystem::uploadStaticModel(const ModelAsset& model, const std::s
     return true;
 }
 
-void OpenGLRenderSystem::drawTexturedModel(const Mat4& vp, const Mat4& model, const std::string& assetCacheKey) {
+void OpenGLRenderSystem::applyTexturedSceneLighting(unsigned int program, Registry& registry, const Vec3& cameraWorld) {
+    Vec3 ambient(0.06f, 0.07f, 0.09f);
+    float posType[8 * 4]{};
+    float dirRange[8 * 4]{};
+    float colorInt[8 * 4]{};
+    float spot[8 * 4]{};
+    float attenSpec[8 * 4]{};
+    int count = 0;
+    float rimPow = 4.0f;
+    float rimInt = 0.0f;
+
+    auto entities = registry.getEntitiesWith<LightingComponent>();
+    for (Entity e : entities) {
+        auto& L = registry.getComponent<LightingComponent>(e);
+        if (!L.enabled)
+            continue;
+        if (L.type == LightType::Ambient) {
+            ambient.x += L.color.x * L.intensity;
+            ambient.y += L.color.y * L.intensity;
+            ambient.z += L.color.z * L.intensity;
+            continue;
+        }
+        if (count >= 8)
+            continue;
+        if (!registry.hasComponent<WorldTransformComponent>(e))
+            continue;
+
+        const Mat4& w = registry.getComponent<WorldTransformComponent>(e).world;
+        Vec3 pos{w.m[12], w.m[13], w.m[14]};
+        Vec3 forward;
+        if (lengthSquared(L.worldDirectionOverride) > 1e-8f)
+            forward = normalize(L.worldDirectionOverride);
+        else if (L.useEntityAxis) {
+            forward = normalize(Vec3{w.m[8], w.m[9], w.m[10]});
+        } else
+            forward = Vec3{0.0f, -1.0f, 0.0f};
+
+        const float t = static_cast<float>(L.type);
+        posType[count * 4 + 0] = pos.x;
+        posType[count * 4 + 1] = pos.y;
+        posType[count * 4 + 2] = pos.z;
+        posType[count * 4 + 3] = t;
+
+        dirRange[count * 4 + 0] = forward.x;
+        dirRange[count * 4 + 1] = forward.y;
+        dirRange[count * 4 + 2] = forward.z;
+        dirRange[count * 4 + 3] = L.range;
+
+        colorInt[count * 4 + 0] = L.color.x;
+        colorInt[count * 4 + 1] = L.color.y;
+        colorInt[count * 4 + 2] = L.color.z;
+        colorInt[count * 4 + 3] = L.intensity;
+
+        constexpr float kPi = 3.14159265f;
+        const float innerCos = std::cos(L.spotInnerDegrees * kPi / 180.0f);
+        const float outerCos = std::cos(L.spotOuterDegrees * kPi / 180.0f);
+        spot[count * 4 + 0] = innerCos;
+        spot[count * 4 + 1] = outerCos;
+        spot[count * 4 + 2] = L.attenLinear;
+        spot[count * 4 + 3] = L.attenQuadratic;
+
+        attenSpec[count * 4 + 0] = L.attenConstant;
+        attenSpec[count * 4 + 1] = L.specularPower;
+        attenSpec[count * 4 + 2] = L.specularIntensity;
+        attenSpec[count * 4 + 3] = L.useHalfLambert ? 1.0f : 0.0f;
+
+        if (L.rimIntensity > rimInt) {
+            rimInt = L.rimIntensity;
+            rimPow = L.rimPower;
+        }
+        ++count;
+    }
+
+    GLint uA = glGetUniformLocation(program, "uAmbient");
+    GLint uCam = glGetUniformLocation(program, "uCameraPos");
+    GLint uLc = glGetUniformLocation(program, "uLightCount");
+    GLint uRim = glGetUniformLocation(program, "uRim");
+    if (uA >= 0)
+        glUniform3f(uA, ambient.x, ambient.y, ambient.z);
+    if (uCam >= 0)
+        glUniform3f(uCam, cameraWorld.x, cameraWorld.y, cameraWorld.z);
+    if (uLc >= 0)
+        glUniform1i(uLc, count);
+    if (uRim >= 0)
+        glUniform2f(uRim, rimPow, rimInt);
+
+    GLint uP = glGetUniformLocation(program, "uLightPosType[0]");
+    GLint uD = glGetUniformLocation(program, "uLightDirRange[0]");
+    GLint uC = glGetUniformLocation(program, "uLightColorInt[0]");
+    GLint uS = glGetUniformLocation(program, "uLightSpot[0]");
+    GLint uAt = glGetUniformLocation(program, "uLightAttenSpec[0]");
+    if (uP >= 0)
+        glUniform4fv(uP, 8, posType);
+    if (uD >= 0)
+        glUniform4fv(uD, 8, dirRange);
+    if (uC >= 0)
+        glUniform4fv(uC, 8, colorInt);
+    if (uS >= 0)
+        glUniform4fv(uS, 8, spot);
+    if (uAt >= 0)
+        glUniform4fv(uAt, 8, attenSpec);
+}
+
+void OpenGLRenderSystem::applyHdriUniforms(unsigned int program, Registry& registry) {
+    GLint uUse = glGetUniformLocation(program, "uUseHdri");
+    if (uUse < 0)
+        return;
+
+    std::vector<Entity> entities = registry.getEntitiesWith<HdriEnvironmentComponent>();
+    Entity first = INVALID_ENTITY;
+    int enabledCount = 0;
+    for (Entity e : entities) {
+        auto& h = registry.getComponent<HdriEnvironmentComponent>(e);
+        if (!h.enabled || h.hdriAssetPath.empty())
+            continue;
+        ++enabledCount;
+        if (first == INVALID_ENTITY)
+            first = e;
+    }
+    if (enabledCount > 1 && !m_hdriWarnedMultiple) {
+        std::cerr << "OpenGLRenderSystem: multiple enabled HdriEnvironmentComponent entities; using the first only.\n";
+        m_hdriWarnedMultiple = true;
+    }
+
+    if (first == INVALID_ENTITY) {
+        glUniform1i(uUse, 0);
+        return;
+    }
+
+    HdriEnvironmentComponent& h = registry.getComponent<HdriEnvironmentComponent>(first);
+    std::string resolved;
+    std::string err;
+    if (resolveHdriFilesystemPath(h.hdriAssetPath) != m_hdriLoadedPath || m_hdriTexture == 0) {
+        if (m_hdriTexture != 0) {
+            glDeleteTextures(1, &m_hdriTexture);
+            m_hdriTexture = 0;
+        }
+        m_hdriLoadedPath.clear();
+        GLuint t = loadEquirectTextureFromFile(h.hdriAssetPath, resolved, err);
+        if (t == 0) {
+            std::cerr << err << "\n";
+            glUniform1i(uUse, 0);
+            return;
+        }
+        m_hdriTexture = t;
+        m_hdriLoadedPath = std::move(resolved);
+    }
+
+    glUniform1i(uUse, 1);
+    GLint uEnv = glGetUniformLocation(program, "uEnvMap");
+    if (uEnv >= 0) {
+        glActiveTexture(GL_TEXTURE4);
+        glBindTexture(GL_TEXTURE_2D, m_hdriTexture);
+        glUniform1i(uEnv, 4);
+    }
+    GLint uInt = glGetUniformLocation(program, "uHdriIntensity");
+    GLint uRot = glGetUniformLocation(program, "uHdriRotY");
+    GLint uDf = glGetUniformLocation(program, "uHdriDiffuseW");
+    GLint uSp = glGetUniformLocation(program, "uHdriSpecW");
+    if (uInt >= 0)
+        glUniform1f(uInt, h.intensity);
+    if (uRot >= 0)
+        glUniform1f(uRot, h.rotationY);
+    if (uDf >= 0)
+        glUniform1f(uDf, h.diffuseEnvironmentWeight);
+    if (uSp >= 0)
+        glUniform1f(uSp, h.specularEnvironmentWeight);
+}
+
+void OpenGLRenderSystem::drawTexturedModel(
+    Registry& registry,
+    const Mat4& vp,
+    const Mat4& model,
+    const std::string& assetCacheKey,
+    const Vec3& cameraWorld) {
     auto it = m_gpuMeshByAssetKey.find(assetCacheKey);
     if (it == m_gpuMeshByAssetKey.end() || it->second.empty() || m_texProgram == 0)
         return;
@@ -554,8 +930,6 @@ void OpenGLRenderSystem::drawTexturedModel(const Mat4& vp, const Mat4& model, co
 
     GLint uM = glGetUniformLocation(m_texProgram, "uModel");
     GLint uMvp = glGetUniformLocation(m_texProgram, "uMVP");
-    GLint uL = glGetUniformLocation(m_texProgram, "uLightDir");
-    GLint uA = glGetUniformLocation(m_texProgram, "uAmbient");
     GLint uTint = glGetUniformLocation(m_texProgram, "uTint");
     GLint uAlb = glGetUniformLocation(m_texProgram, "uAlbedo");
     GLint uNorm = glGetUniformLocation(m_texProgram, "uNormalMap");
@@ -568,16 +942,9 @@ void OpenGLRenderSystem::drawTexturedModel(const Mat4& vp, const Mat4& model, co
     glUniformMatrix4fv(uM, 1, GL_FALSE, model.m);
     glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m);
 
-    float lightDir[3] = {0.35f, 0.85f, 0.35f};
-    float len = std::sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
-    if (len > 1e-5f) {
-        lightDir[0] /= len;
-        lightDir[1] /= len;
-        lightDir[2] /= len;
-    }
-    glUniform3fv(uL, 1, lightDir);
-    glUniform3f(uA, 0.22f, 0.22f, 0.25f);
     glUniform3f(uTint, 1.0f, 1.0f, 1.0f);
+    applyTexturedSceneLighting(m_texProgram, registry, cameraWorld);
+    applyHdriUniforms(m_texProgram, registry);
 
     const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
     glDisable(GL_CULL_FACE);
@@ -619,10 +986,12 @@ void OpenGLRenderSystem::drawTexturedModel(const Mat4& vp, const Mat4& model, co
 }
 
 void OpenGLRenderSystem::drawTexturedSkinnedModel(
+    Registry& registry,
     const Mat4& vp,
     const Mat4& model,
     const std::string& assetCacheKey,
-    const std::vector<Mat4>& jointSkinMatrices) {
+    const std::vector<Mat4>& jointSkinMatrices,
+    const Vec3& cameraWorld) {
     auto it = m_gpuMeshByAssetKey.find(assetCacheKey);
     if (it == m_gpuMeshByAssetKey.end() || it->second.empty() || m_skinTexProgram == 0)
         return;
@@ -644,8 +1013,6 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
 
     GLint uM = glGetUniformLocation(m_skinTexProgram, "uModel");
     GLint uMvp = glGetUniformLocation(m_skinTexProgram, "uMVP");
-    GLint uL = glGetUniformLocation(m_skinTexProgram, "uLightDir");
-    GLint uA = glGetUniformLocation(m_skinTexProgram, "uAmbient");
     GLint uTint = glGetUniformLocation(m_skinTexProgram, "uTint");
     GLint uAlb = glGetUniformLocation(m_skinTexProgram, "uAlbedo");
     GLint uNorm = glGetUniformLocation(m_skinTexProgram, "uNormalMap");
@@ -658,16 +1025,9 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
     glUniformMatrix4fv(uM, 1, GL_FALSE, model.m);
     glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m);
 
-    float lightDir[3] = {0.35f, 0.85f, 0.35f};
-    float len = std::sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
-    if (len > 1e-5f) {
-        lightDir[0] /= len;
-        lightDir[1] /= len;
-        lightDir[2] /= len;
-    }
-    glUniform3fv(uL, 1, lightDir);
-    glUniform3f(uA, 0.22f, 0.22f, 0.25f);
     glUniform3f(uTint, 1.0f, 1.0f, 1.0f);
+    applyTexturedSceneLighting(m_skinTexProgram, registry, cameraWorld);
+    applyHdriUniforms(m_skinTexProgram, registry);
 
     const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
     glDisable(GL_CULL_FACE);
@@ -714,8 +1074,6 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
         GLint uMr = glGetUniformLocation(m_texProgram, "uMetallicRoughness");
         GLint uM = glGetUniformLocation(m_texProgram, "uModel");
         GLint uMvp = glGetUniformLocation(m_texProgram, "uMVP");
-        GLint uL = glGetUniformLocation(m_texProgram, "uLightDir");
-        GLint uA = glGetUniformLocation(m_texProgram, "uAmbient");
         GLint uTint = glGetUniformLocation(m_texProgram, "uTint");
         GLint uAlb = glGetUniformLocation(m_texProgram, "uAlbedo");
         GLint uNorm = glGetUniformLocation(m_texProgram, "uNormalMap");
@@ -725,16 +1083,9 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
         GLint uUseMr = glGetUniformLocation(m_texProgram, "uUseMetallicRoughness");
         glUniformMatrix4fv(uM, 1, GL_FALSE, model.m);
         glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m);
-        float lightDir[3] = {0.35f, 0.85f, 0.35f};
-        float lenR = std::sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
-        if (lenR > 1e-5f) {
-            lightDir[0] /= lenR;
-            lightDir[1] /= lenR;
-            lightDir[2] /= lenR;
-        }
-        glUniform3fv(uL, 1, lightDir);
-        glUniform3f(uA, 0.22f, 0.22f, 0.25f);
         glUniform3f(uTint, 1.0f, 1.0f, 1.0f);
+        applyTexturedSceneLighting(m_texProgram, registry, cameraWorld);
+        applyHdriUniforms(m_texProgram, registry);
         for (const StaticMeshPart& part : it->second) {
             if (part.skinned)
                 continue;
@@ -772,6 +1123,11 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
 
 void OpenGLRenderSystem::shutdown() {
     releaseStaticModel();
+    if (m_hdriTexture != 0) {
+        glDeleteTextures(1, &m_hdriTexture);
+        m_hdriTexture = 0;
+    }
+    m_hdriLoadedPath.clear();
     if (m_skinPaletteUbo) {
         glDeleteBuffers(1, &m_skinPaletteUbo);
         m_skinPaletteUbo = 0;
@@ -934,11 +1290,11 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
         if (registry.hasComponent<GpuSkinPaletteComponent>(e)) {
             const auto& skinPal = registry.getComponent<GpuSkinPaletteComponent>(e);
             if (!skinPal.jointSkinMatrices.empty())
-                drawTexturedSkinnedModel(vp, combined, smc.assetCacheKey, skinPal.jointSkinMatrices);
+                drawTexturedSkinnedModel(registry, vp, combined, smc.assetCacheKey, skinPal.jointSkinMatrices, eye);
             else
-                drawTexturedModel(vp, combined, smc.assetCacheKey);
+                drawTexturedModel(registry, vp, combined, smc.assetCacheKey, eye);
         } else {
-            drawTexturedModel(vp, combined, smc.assetCacheKey);
+            drawTexturedModel(registry, vp, combined, smc.assetCacheKey, eye);
         }
     }
 

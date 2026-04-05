@@ -55,6 +55,8 @@
 #include "../components/StreamableModelComponent.hpp"
 #include "../components/SkinnedMeshComponent.hpp"
 #include "../components/GpuSkinPaletteComponent.hpp"
+#include "../components/LightingComponent.hpp"
+#include "../components/HdriEnvironmentComponent.hpp"
 
 #include "../animation/AnimationSampling.hpp"
 #include "../rendering/OpenGLRenderSystem.hpp"
@@ -167,6 +169,8 @@ public:
         loadPlayerAvatarAssetFromDisk();
         attachPlayerSkeletonAnimation();
         createHandSocketAndAttachedEnemy();
+        createLightingEntities();
+        createHdriEnvironmentEntity();
         createEnemies();
         createCameraRig();
 
@@ -353,6 +357,8 @@ private:
         m_registry.registerComponent<FacingRayDriverComponent>();
         m_registry.registerComponent<StaticMeshComponent>();
         m_registry.registerComponent<GpuSkinPaletteComponent>();
+        m_registry.registerComponent<LightingComponent>();
+        m_registry.registerComponent<HdriEnvironmentComponent>();
     }
 
     void createPlayer()
@@ -901,6 +907,12 @@ private:
                 return "Socket(hand)";
             if (e == m_handAttachedEnemy)
                 return "Enemy@hand";
+            if (e == m_sunLightEntity)
+                return "Light(sun)";
+            if (e == m_ambientLightEntity)
+                return "Light(ambient)";
+            if (e == m_handLightEntity)
+                return "Light(hand)";
             for (std::size_t i = 0; i < m_enemies.size(); ++i)
             {
                 if (m_enemies[i] == e)
@@ -1418,6 +1430,79 @@ private:
             false});
     }
 
+    /// ECS lights consumed by `OpenGLRenderSystem::applyTexturedSceneLighting` (fragment shader only).
+    void createLightingEntities()
+    {
+        m_sunLightEntity = m_registry.createEntity();
+        m_registry.addComponent(m_sunLightEntity, TransformComponent{});
+        m_registry.addComponent(m_sunLightEntity, WorldTransformComponent{});
+        {
+            LightingComponent sun{};
+            sun.type              = LightType::Directional;
+            sun.useEntityAxis     = false;
+            sun.worldDirectionOverride = normalize(Vec3{0.42f, -0.84f, 0.34f});
+            sun.color             = {1.0f, 0.96f, 0.88f};
+            sun.intensity         = 0.95f;
+            sun.specularPower     = 56.0f;
+            sun.specularIntensity = 0.28f;
+            sun.useHalfLambert    = true;
+            m_registry.addComponent(m_sunLightEntity, sun);
+        }
+
+        m_ambientLightEntity = m_registry.createEntity();
+        {
+            LightingComponent amb{};
+            amb.type      = LightType::Ambient;
+            amb.color     = {0.11f, 0.13f, 0.17f};
+            amb.intensity = 1.0f;
+            m_registry.addComponent(m_ambientLightEntity, amb);
+        }
+
+        if (m_handSocketEntity == INVALID_ENTITY)
+            return;
+
+        m_handLightEntity = m_registry.createEntity();
+        m_registry.addComponent(m_handLightEntity, TransformComponent{});
+        m_registry.addComponent(m_handLightEntity, WorldTransformComponent{});
+        {
+            LightingComponent hl{};
+            hl.type               = LightType::Spot;
+            hl.color              = {1.0f, 0.78f, 0.48f};
+            hl.intensity          = 4.2f;
+            hl.range              = 20.0f;
+            hl.attenLinear        = 0.12f;
+            hl.attenQuadratic     = 0.28f;
+            hl.spotInnerDegrees   = 20.0f;
+            hl.spotOuterDegrees   = 38.0f;
+            hl.specularPower      = 40.0f;
+            hl.specularIntensity  = 0.65f;
+            hl.rimIntensity       = 0.14f;
+            hl.rimPower           = 3.2f;
+            hl.useHalfLambert     = true;
+            m_registry.addComponent(m_handLightEntity, hl);
+        }
+        m_registry.addComponent(m_handLightEntity, AttachComponent{
+            m_player,
+            m_handSocketEntity,
+            {0.0f, 0.0f, 0.0f},
+            {},
+            true,
+            false});
+    }
+
+    /// Single active HDRI for `OpenGLRenderSystem` (first enabled `HdriEnvironmentComponent` wins).
+    void createHdriEnvironmentEntity()
+    {
+        m_hdriEnvEntity = m_registry.createEntity();
+        HdriEnvironmentComponent h{};
+#ifdef GAME_ENGINE_PROJECT_ROOT
+        h.hdriAssetPath = std::string(GAME_ENGINE_PROJECT_ROOT) + "/assets/lighting/hdri.webp";
+#else
+        h.hdriAssetPath = "assets/lighting/hdri.webp";
+#endif
+        m_registry.addComponent(m_hdriEnvEntity, h);
+    }
+
     // -------------------------------------------------
     // State Machines
     // -------------------------------------------------
@@ -1645,6 +1730,10 @@ private:
 
     Entity m_handSocketEntity{INVALID_ENTITY};
     Entity m_handAttachedEnemy{INVALID_ENTITY};
+    Entity m_sunLightEntity{INVALID_ENTITY};
+    Entity m_ambientLightEntity{INVALID_ENTITY};
+    Entity m_handLightEntity{INVALID_ENTITY};
+    Entity m_hdriEnvEntity{INVALID_ENTITY};
     Entity m_camera{};
     Entity m_cameraSocket{};
     Entity m_playerRaySocket{INVALID_ENTITY};
