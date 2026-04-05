@@ -36,10 +36,16 @@ public:
 private:
     void buildPyramidMesh();
     void buildTexturedShaderPipeline();
+    void buildSkinnedTexturedShaderPipeline();
     void releaseStaticModel();
     void releaseGpuMeshesForKey(const std::string& assetCacheKey);
     void drawPyramid(const Mat4& mvp, const Mat4& model, const float color[3]);
     void drawTexturedModel(const Mat4& vp, const Mat4& model, const std::string& assetCacheKey);
+    void drawTexturedSkinnedModel(
+        const Mat4& vp,
+        const Mat4& model,
+        const std::string& assetCacheKey,
+        const std::vector<Mat4>& jointSkinMatrices);
 
     struct StaticMeshPart {
         unsigned int vao = 0;
@@ -53,6 +59,7 @@ private:
         bool         hasNormalMap = false;
         bool         hasOcclusion = false;
         bool         hasMetallicRoughness = false;
+        bool         skinned = false;
     };
 
     GLFWwindow* m_window = nullptr;
@@ -61,6 +68,8 @@ private:
 
     unsigned int m_program = 0;
     unsigned int m_texProgram = 0;
+    unsigned int m_skinTexProgram = 0;
+    unsigned int m_skinPaletteUbo = 0;
     unsigned int m_vao = 0;
     unsigned int m_vbo = 0;
     unsigned int m_vertexCount = 0;

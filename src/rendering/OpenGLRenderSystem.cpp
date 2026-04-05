@@ -6,6 +6,8 @@
 #include "../components/BoneInstanceComponent.hpp"
 #include "../components/CameraComponent.hpp"
 #include "../components/GameplayTags.hpp"
+#include "../components/GpuSkinPaletteComponent.hpp"
+#include "../components/SocketComponent.hpp"
 #include "../components/StaticMeshComponent.hpp"
 #include "../components/TransformComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
@@ -22,6 +24,8 @@
 #include <GL/glew.h>
 #endif
 
+#include <algorithm>
+#include <cstddef>
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -100,7 +104,10 @@ uniform vec3 uAmbient;
 uniform vec3 uTint;
 out vec4 FragColor;
 void main() {
-    vec4 base = texture(uAlbedo, vUV) * vec4(uTint, 1.0);
+    vec4 tex = texture(uAlbedo, vUV);
+    // Opaque albedos often have A=0 or missing alpha; treat near-zero A as opaque so we don't discard the whole mesh.
+    float a = tex.a < 0.04f ? 1.0f : tex.a;
+    vec4 base = vec4(tex.rgb, a) * vec4(uTint, 1.0);
     if (base.a < 0.35)
         discard;
     vec3 N = normalize(vN);
@@ -125,6 +132,81 @@ void main() {
     FragColor = vec4(c, base.a);
 }
 )";
+
+static const char* kSkinTexVertSrc = R"(
+#version 330 core
+layout(location = 0) in vec3 aPos;
+layout(location = 1) in vec3 aNormal;
+layout(location = 2) in vec2 aUV;
+layout(location = 3) in vec4 aTangent;
+layout(location = 4) in ivec4 aBoneIndex;
+layout(location = 5) in vec4 aBoneWeight;
+
+layout(std140) uniform SkinPalette {
+    mat4 uJointMatrix[512];
+};
+
+uniform mat4 uModel;
+uniform mat4 uMVP;
+
+out vec3 vWorldPos;
+out vec3 vN;
+out vec4 vTan;
+out vec2 vUV;
+
+void main() {
+    vec4 pos = vec4(aPos, 1.0);
+    vec3 n = aNormal;
+    vec3 txyz = aTangent.xyz;
+    float wsum = aBoneWeight.x + aBoneWeight.y + aBoneWeight.z + aBoneWeight.w;
+
+    vec4 sp = vec4(0.0);
+    vec3 sn = vec3(0.0);
+    vec3 st = vec3(0.0);
+
+    if (wsum > 1e-6) {
+        int bi0 = clamp(aBoneIndex.x, 0, 511);
+        int bi1 = clamp(aBoneIndex.y, 0, 511);
+        int bi2 = clamp(aBoneIndex.z, 0, 511);
+        int bi3 = clamp(aBoneIndex.w, 0, 511);
+        sp += uJointMatrix[bi0] * pos * aBoneWeight.x;
+        sp += uJointMatrix[bi1] * pos * aBoneWeight.y;
+        sp += uJointMatrix[bi2] * pos * aBoneWeight.z;
+        sp += uJointMatrix[bi3] * pos * aBoneWeight.w;
+        mat3 J0 = mat3(uJointMatrix[bi0]);
+        mat3 J1 = mat3(uJointMatrix[bi1]);
+        mat3 J2 = mat3(uJointMatrix[bi2]);
+        mat3 J3 = mat3(uJointMatrix[bi3]);
+        sn += J0 * n * aBoneWeight.x;
+        sn += J1 * n * aBoneWeight.y;
+        sn += J2 * n * aBoneWeight.z;
+        sn += J3 * n * aBoneWeight.w;
+        st += J0 * txyz * aBoneWeight.x;
+        st += J1 * txyz * aBoneWeight.y;
+        st += J2 * txyz * aBoneWeight.z;
+        st += J3 * txyz * aBoneWeight.w;
+    } else {
+        sp = pos;
+        sn = n;
+        st = txyz;
+    }
+    sn = normalize(sn);
+    st = normalize(st);
+
+    vec4 wp = uModel * sp;
+    vWorldPos = wp.xyz;
+    mat3 M = mat3(transpose(inverse(uModel)));
+    vN = normalize(M * sn);
+    vTan = vec4(normalize(M * st), aTangent.w);
+    vUV = aUV;
+    gl_Position = uMVP * sp;
+}
+)";
+
+namespace {
+constexpr int kMaxSkinJoints = 512;
+constexpr GLsizeiptr kSkinUboBytes = kMaxSkinJoints * static_cast<GLsizeiptr>(sizeof(Mat4));
+} // namespace
 
 static GLuint loadTexture2DFromFile(const std::string& path, bool srgb) {
     if (path.empty())
@@ -237,6 +319,14 @@ bool OpenGLRenderSystem::init(int width, int height, const char* title) {
 
     buildPyramidMesh();
     buildTexturedShaderPipeline();
+    buildSkinnedTexturedShaderPipeline();
+
+    glGenBuffers(1, &m_skinPaletteUbo);
+    glBindBuffer(GL_UNIFORM_BUFFER, m_skinPaletteUbo);
+    glBufferData(GL_UNIFORM_BUFFER, kSkinUboBytes, nullptr, GL_DYNAMIC_DRAW);
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, m_skinPaletteUbo);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
     return true;
 }
 
@@ -304,6 +394,33 @@ void OpenGLRenderSystem::buildTexturedShaderPipeline() {
         std::cerr << "Textured program link: " << log << "\n";
         glDeleteProgram(m_texProgram);
         m_texProgram = 0;
+    }
+}
+
+void OpenGLRenderSystem::buildSkinnedTexturedShaderPipeline() {
+    GLuint vs = compileShader(GL_VERTEX_SHADER, kSkinTexVertSrc);
+    GLuint fs = compileShader(GL_FRAGMENT_SHADER, kTexFragSrc);
+    if (!vs || !fs)
+        return;
+    m_skinTexProgram = glCreateProgram();
+    glAttachShader(m_skinTexProgram, vs);
+    glAttachShader(m_skinTexProgram, fs);
+    glLinkProgram(m_skinTexProgram);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    GLint linked = 0;
+    glGetProgramiv(m_skinTexProgram, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[1024];
+        glGetProgramInfoLog(m_skinTexProgram, sizeof(log), nullptr, log);
+        std::cerr << "Skinned textured program link: " << log << "\n";
+        glDeleteProgram(m_skinTexProgram);
+        m_skinTexProgram = 0;
+    } else {
+        // GLSL 330 has no `layout(binding=N)` on uniform blocks; bind block to point 1 (see UBO below).
+        const GLuint skinBlock = glGetUniformBlockIndex(m_skinTexProgram, "SkinPalette");
+        if (skinBlock != GL_INVALID_INDEX)
+            glUniformBlockBinding(m_skinTexProgram, skinBlock, 1);
     }
 }
 
@@ -390,6 +507,17 @@ bool OpenGLRenderSystem::uploadStaticModel(const ModelAsset& model, const std::s
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, part.ebo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(int), mesh.indices.data(), GL_STATIC_DRAW);
 
+        bool anySkin = false;
+        for (const Vertex& vv : mesh.vertices) {
+            const float ws =
+                vv.boneWeight[0] + vv.boneWeight[1] + vv.boneWeight[2] + vv.boneWeight[3];
+            if (ws > 1e-6f) {
+                anySkin = true;
+                break;
+            }
+        }
+        part.skinned = anySkin;
+
         glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
         glEnableVertexAttribArray(0);
         glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)(sizeof(float) * 3));
@@ -398,6 +526,10 @@ bool OpenGLRenderSystem::uploadStaticModel(const ModelAsset& model, const std::s
         glEnableVertexAttribArray(2);
         glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, (void*)(sizeof(float) * 8));
         glEnableVertexAttribArray(3);
+        glVertexAttribIPointer(4, 4, GL_INT, stride, (void*)offsetof(Vertex, boneIndex));
+        glEnableVertexAttribArray(4);
+        glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(Vertex, boneWeight));
+        glEnableVertexAttribArray(5);
 
         glBindVertexArray(0);
         part.indexCount = static_cast<int>(mesh.indices.size());
@@ -486,8 +618,168 @@ void OpenGLRenderSystem::drawTexturedModel(const Mat4& vp, const Mat4& model, co
     glUseProgram(m_program);
 }
 
+void OpenGLRenderSystem::drawTexturedSkinnedModel(
+    const Mat4& vp,
+    const Mat4& model,
+    const std::string& assetCacheKey,
+    const std::vector<Mat4>& jointSkinMatrices) {
+    auto it = m_gpuMeshByAssetKey.find(assetCacheKey);
+    if (it == m_gpuMeshByAssetKey.end() || it->second.empty() || m_skinTexProgram == 0)
+        return;
+
+    static std::vector<Mat4> pad;
+    pad.assign(static_cast<size_t>(kMaxSkinJoints), Mat4::Identity());
+    const size_t n = std::min(jointSkinMatrices.size(), static_cast<size_t>(kMaxSkinJoints));
+    for (size_t i = 0; i < n; ++i)
+        pad[i] = jointSkinMatrices[i];
+
+    glBindBuffer(GL_UNIFORM_BUFFER, m_skinPaletteUbo);
+    glBufferSubData(GL_UNIFORM_BUFFER, 0, kSkinUboBytes, pad.data());
+    glBindBufferBase(GL_UNIFORM_BUFFER, 1, m_skinPaletteUbo);
+    glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+    glUseProgram(m_skinTexProgram);
+
+    Mat4 mvp = mat4Mul(vp, model);
+
+    GLint uM = glGetUniformLocation(m_skinTexProgram, "uModel");
+    GLint uMvp = glGetUniformLocation(m_skinTexProgram, "uMVP");
+    GLint uL = glGetUniformLocation(m_skinTexProgram, "uLightDir");
+    GLint uA = glGetUniformLocation(m_skinTexProgram, "uAmbient");
+    GLint uTint = glGetUniformLocation(m_skinTexProgram, "uTint");
+    GLint uAlb = glGetUniformLocation(m_skinTexProgram, "uAlbedo");
+    GLint uNorm = glGetUniformLocation(m_skinTexProgram, "uNormalMap");
+    GLint uOcc = glGetUniformLocation(m_skinTexProgram, "uOcclusion");
+    GLint uMr = glGetUniformLocation(m_skinTexProgram, "uMetallicRoughness");
+    GLint uUseN = glGetUniformLocation(m_skinTexProgram, "uUseNormalMap");
+    GLint uUseOcc = glGetUniformLocation(m_skinTexProgram, "uUseOcclusion");
+    GLint uUseMr = glGetUniformLocation(m_skinTexProgram, "uUseMetallicRoughness");
+
+    glUniformMatrix4fv(uM, 1, GL_FALSE, model.m);
+    glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m);
+
+    float lightDir[3] = {0.35f, 0.85f, 0.35f};
+    float len = std::sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
+    if (len > 1e-5f) {
+        lightDir[0] /= len;
+        lightDir[1] /= len;
+        lightDir[2] /= len;
+    }
+    glUniform3fv(uL, 1, lightDir);
+    glUniform3f(uA, 0.22f, 0.22f, 0.25f);
+    glUniform3f(uTint, 1.0f, 1.0f, 1.0f);
+
+    const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    for (const StaticMeshPart& part : it->second) {
+        if (!part.skinned)
+            continue;
+
+        glUniform1i(uUseN, part.hasNormalMap ? 1 : 0);
+        glUniform1i(uUseOcc, part.hasOcclusion ? 1 : 0);
+        glUniform1i(uUseMr, part.hasMetallicRoughness ? 1 : 0);
+
+        glActiveTexture(GL_TEXTURE0);
+        glBindTexture(GL_TEXTURE_2D, part.albedo);
+        glUniform1i(uAlb, 0);
+
+        glActiveTexture(GL_TEXTURE1);
+        glBindTexture(GL_TEXTURE_2D, part.hasNormalMap ? part.normalMap : part.albedo);
+        glUniform1i(uNorm, 1);
+
+        glActiveTexture(GL_TEXTURE2);
+        glBindTexture(GL_TEXTURE_2D, part.hasOcclusion ? part.occlusionMap : part.albedo);
+        glUniform1i(uOcc, 2);
+
+        glActiveTexture(GL_TEXTURE3);
+        glBindTexture(GL_TEXTURE_2D, part.hasMetallicRoughness ? part.metallicRoughnessMap : part.albedo);
+        glUniform1i(uMr, 3);
+
+        glBindVertexArray(part.vao);
+        glDrawElements(GL_TRIANGLES, part.indexCount, GL_UNSIGNED_INT, nullptr);
+    }
+
+    bool anyRigid = false;
+    for (const StaticMeshPart& part : it->second) {
+        if (!part.skinned) {
+            anyRigid = true;
+            break;
+        }
+    }
+    if (anyRigid) {
+        glUseProgram(m_texProgram);
+        GLint uMr = glGetUniformLocation(m_texProgram, "uMetallicRoughness");
+        GLint uM = glGetUniformLocation(m_texProgram, "uModel");
+        GLint uMvp = glGetUniformLocation(m_texProgram, "uMVP");
+        GLint uL = glGetUniformLocation(m_texProgram, "uLightDir");
+        GLint uA = glGetUniformLocation(m_texProgram, "uAmbient");
+        GLint uTint = glGetUniformLocation(m_texProgram, "uTint");
+        GLint uAlb = glGetUniformLocation(m_texProgram, "uAlbedo");
+        GLint uNorm = glGetUniformLocation(m_texProgram, "uNormalMap");
+        GLint uOcc = glGetUniformLocation(m_texProgram, "uOcclusion");
+        GLint uUseN = glGetUniformLocation(m_texProgram, "uUseNormalMap");
+        GLint uUseOcc = glGetUniformLocation(m_texProgram, "uUseOcclusion");
+        GLint uUseMr = glGetUniformLocation(m_texProgram, "uUseMetallicRoughness");
+        glUniformMatrix4fv(uM, 1, GL_FALSE, model.m);
+        glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m);
+        float lightDir[3] = {0.35f, 0.85f, 0.35f};
+        float lenR = std::sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
+        if (lenR > 1e-5f) {
+            lightDir[0] /= lenR;
+            lightDir[1] /= lenR;
+            lightDir[2] /= lenR;
+        }
+        glUniform3fv(uL, 1, lightDir);
+        glUniform3f(uA, 0.22f, 0.22f, 0.25f);
+        glUniform3f(uTint, 1.0f, 1.0f, 1.0f);
+        for (const StaticMeshPart& part : it->second) {
+            if (part.skinned)
+                continue;
+            glUniform1i(uUseN, part.hasNormalMap ? 1 : 0);
+            glUniform1i(uUseOcc, part.hasOcclusion ? 1 : 0);
+            glUniform1i(uUseMr, part.hasMetallicRoughness ? 1 : 0);
+            glActiveTexture(GL_TEXTURE0);
+            glBindTexture(GL_TEXTURE_2D, part.albedo);
+            glUniform1i(uAlb, 0);
+            glActiveTexture(GL_TEXTURE1);
+            glBindTexture(GL_TEXTURE_2D, part.hasNormalMap ? part.normalMap : part.albedo);
+            glUniform1i(uNorm, 1);
+            glActiveTexture(GL_TEXTURE2);
+            glBindTexture(GL_TEXTURE_2D, part.hasOcclusion ? part.occlusionMap : part.albedo);
+            glUniform1i(uOcc, 2);
+            glActiveTexture(GL_TEXTURE3);
+            glBindTexture(GL_TEXTURE_2D, part.hasMetallicRoughness ? part.metallicRoughnessMap : part.albedo);
+            glUniform1i(uMr, 3);
+            glBindVertexArray(part.vao);
+            glDrawElements(GL_TRIANGLES, part.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+        glBindVertexArray(0);
+        glActiveTexture(GL_TEXTURE0);
+    }
+
+    glBindVertexArray(0);
+    glActiveTexture(GL_TEXTURE0);
+
+    if (cullWas)
+        glEnable(GL_CULL_FACE);
+    glDisable(GL_BLEND);
+
+    glUseProgram(m_program);
+}
+
 void OpenGLRenderSystem::shutdown() {
     releaseStaticModel();
+    if (m_skinPaletteUbo) {
+        glDeleteBuffers(1, &m_skinPaletteUbo);
+        m_skinPaletteUbo = 0;
+    }
+    if (m_skinTexProgram) {
+        glDeleteProgram(m_skinTexProgram);
+        m_skinTexProgram = 0;
+    }
     if (m_texProgram) {
         glDeleteProgram(m_texProgram);
         m_texProgram = 0;
@@ -638,7 +930,16 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
         const Mat4 R = Mat4::FromTR({0.0f, 0.0f, 0.0f}, smc.modelSpaceRotation);
         const Mat4 S = Mat4::FromScale({smc.uniformScale, smc.uniformScale, smc.uniformScale});
         const Mat4 combined = mat4Mul(mat4Mul(base, R), S);
-        drawTexturedModel(vp, combined, smc.assetCacheKey);
+
+        if (registry.hasComponent<GpuSkinPaletteComponent>(e)) {
+            const auto& skinPal = registry.getComponent<GpuSkinPaletteComponent>(e);
+            if (!skinPal.jointSkinMatrices.empty())
+                drawTexturedSkinnedModel(vp, combined, smc.assetCacheKey, skinPal.jointSkinMatrices);
+            else
+                drawTexturedModel(vp, combined, smc.assetCacheKey);
+        } else {
+            drawTexturedModel(vp, combined, smc.assetCacheKey);
+        }
     }
 
     glUseProgram(m_program);
@@ -665,8 +966,20 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
         drawAt(worldTranslation(playerEntity), 1.15f, colPlayer);
     }
 
-    for (Entity e : registry.getEntitiesWith<EnemyTagComponent, TransformComponent>())
-        drawAt(worldTranslation(e), 1.05f, colEnemy);
+    for (Entity e : registry.getEntitiesWith<EnemyTagComponent, TransformComponent>()) {
+        const auto& t = registry.getComponent<TransformComponent>(e);
+        const float sx = std::max(std::max(t.scale.x, t.scale.y), t.scale.z);
+        drawAt(worldTranslation(e), 1.05f * sx, colEnemy);
+    }
+
+    for (Entity e : registry.getEntitiesWith<SocketComponent>()) {
+        const auto& sock = registry.getComponent<SocketComponent>(e);
+        if (!sock.debugDrawPyramid)
+            continue;
+        const Mat4& wt = sock.worldTransform;
+        const Vec3 p{wt.m[12], wt.m[13], wt.m[14]};
+        drawAt(p, 0.28f, colBone);
+    }
 
     for (Entity e : registry.getEntitiesWith<BoneInstanceComponent, WorldTransformComponent>())
     {

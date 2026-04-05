@@ -309,6 +309,52 @@ inline void sampleAnimationBlended(
     }
 }
 
+/// Full skeleton sample: every bone gets a global matrix (skeleton-local). Use for GPU skinning palettes.
+inline void sampleAnimationBlendedFull(
+    const ModelAsset& model,
+    int clipA,
+    float timeA,
+    int clipB,
+    float timeB,
+    float blendAlpha,
+    bool loopA,
+    bool loopB,
+    std::vector<Mat4>& outGlobal) {
+    const Skeleton& sk = model.skeleton;
+    if (sk.bones.empty())
+        return;
+
+    std::vector<BoneLocalTRS> localA, localB, localM;
+    initLocalsFromRest(sk, localA);
+    initLocalsFromRest(sk, localB);
+
+    if (clipA >= 0 && clipA < static_cast<int>(model.clips.size())) {
+        const AnimationClipData& c = model.clips[static_cast<size_t>(clipA)];
+        float t = animationTimeClamp(timeA, c.durationSec, loopA);
+        applyClipChannels(c, t, localA);
+    }
+    if (clipB >= 0 && clipB < static_cast<int>(model.clips.size())) {
+        const AnimationClipData& c = model.clips[static_cast<size_t>(clipB)];
+        float t = animationTimeClamp(timeB, c.durationSec, loopB);
+        applyClipChannels(c, t, localB);
+    }
+
+    blendLocalPoses(localA, localB, blendAlpha, localM);
+    localsToGlobalMatrices(sk, localM, outGlobal);
+}
+
+/// Per-joint skin matrix for glTF-style GPU skinning: `globalBone * inverseBind`.
+inline void computeSkinMatrices(
+    const Skeleton& sk,
+    const std::vector<Mat4>& global,
+    std::vector<Mat4>& outSkin) {
+    outSkin.resize(sk.bones.size());
+    for (size_t i = 0; i < sk.bones.size(); ++i) {
+        const Mat4& g = (i < global.size()) ? global[i] : Mat4::Identity();
+        outSkin[i] = mat4Mul(g, sk.bones[i].inverseBind);
+    }
+}
+
 inline bool sameSortedSyncIndices(const std::vector<int>& a, const std::vector<int>& b) {
     if (a.size() != b.size())
         return false;
