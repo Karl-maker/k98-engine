@@ -33,6 +33,7 @@
 #include "../systems/PositionToTransformSystem.hpp"
 #include "../systems/CollisionLastPositionSyncSystem.hpp"
 #include "../systems/FacingRaySystem.hpp"
+#include "../systems/AudioSystem.hpp"
 
 #include "../core/assets/AssetManager.hpp"
 #include "../core/assets/StreamingLoadService.hpp"
@@ -57,6 +58,7 @@
 #include "../components/GpuSkinPaletteComponent.hpp"
 #include "../components/LightingComponent.hpp"
 #include "../components/HdriEnvironmentComponent.hpp"
+#include "../components/AudioComponent.hpp"
 
 #include "../animation/AnimationSampling.hpp"
 #include "../rendering/OpenGLRenderSystem.hpp"
@@ -171,6 +173,7 @@ public:
         createHandSocketAndAttachedEnemy();
         createLightingEntities();
         createHdriEnvironmentEntity();
+        createPlayerSlowingSfxEntity();
         createEnemies();
         createCameraRig();
 
@@ -226,6 +229,10 @@ public:
                     glfwSetCursorPos(m_gl.window(), static_cast<double>(ww) * 0.5, static_cast<double>(wh) * 0.5);
             }
             uploadPlayerAvatarToGpu();
+            if (!m_audioSystem.init())
+            {
+                std::cerr << "Audio engine init failed (continuing without sound).\n";
+            }
         }
     }
 
@@ -312,6 +319,8 @@ public:
     {
         m_threadService.shutdown();
 
+        m_audioSystem.shutdown();
+
         if (m_gl.window())
             glfwSetInputMode(m_gl.window(), GLFW_CURSOR, GLFW_CURSOR_NORMAL);
         m_gl.shutdown();
@@ -359,6 +368,7 @@ private:
         m_registry.registerComponent<GpuSkinPaletteComponent>();
         m_registry.registerComponent<LightingComponent>();
         m_registry.registerComponent<HdriEnvironmentComponent>();
+        m_registry.registerComponent<AudioComponent>();
     }
 
     void createPlayer()
@@ -651,6 +661,7 @@ private:
     void updateSimulationGroup(double dt)
     {
         const float fdt = static_cast<float>(dt);
+        syncPlayerSlowingSfx();
         updatePlayerLocomotionAnimation(fdt);
         m_animationSystem.update(m_registry, fdt);
         updatePlayerGpuSkin();
@@ -659,6 +670,7 @@ private:
         m_socketSystem.update(m_registry);
         m_attachmentSystem.update(m_registry);
         m_cameraSystem.update(m_registry, fdt);
+        m_audioSystem.update(m_registry);
     }
 
     // SystemUpdateGroup::Physics — collision, facing ray, raycast (after transforms and camera).
@@ -1503,6 +1515,38 @@ private:
         m_registry.addComponent(m_hdriEnvEntity, h);
     }
 
+    void createPlayerSlowingSfxEntity()
+    {
+        m_slowingSfxEntity = m_registry.createEntity();
+        AudioComponent a{};
+#ifdef GAME_ENGINE_PROJECT_ROOT
+        a.clipPath = std::string(GAME_ENGINE_PROJECT_ROOT) + "/assets/audio/correct.mp3";
+#else
+        a.clipPath = "assets/audio/correct.mp3";
+#endif
+        a.volume     = 0.9f;
+        a.loop       = false;
+        a.playing    = false;
+        a.paused     = false;
+        m_registry.addComponent(m_slowingSfxEntity, a);
+    }
+
+    /// Fire one-shot SFX when the player FSM enters `Slowing` (see AudioComponent + AudioSystem).
+    void syncPlayerSlowingSfx()
+    {
+        if (m_slowingSfxEntity == INVALID_ENTITY || !m_registry.hasComponent<StateMachineComponent>(m_player))
+            return;
+        auto& sm                        = m_registry.getComponent<StateMachineComponent>(m_player).machine;
+        const std::string cur             = sm.getCurrentState();
+        if (cur == "Slowing" && m_prevPlayerFsmStateForSfx != "Slowing")
+        {
+            auto& sfx               = m_registry.getComponent<AudioComponent>(m_slowingSfxEntity);
+            sfx.playing             = true;
+            sfx.paused              = false;
+        }
+        m_prevPlayerFsmStateForSfx = cur;
+    }
+
     // -------------------------------------------------
     // State Machines
     // -------------------------------------------------
@@ -1734,6 +1778,8 @@ private:
     Entity m_ambientLightEntity{INVALID_ENTITY};
     Entity m_handLightEntity{INVALID_ENTITY};
     Entity m_hdriEnvEntity{INVALID_ENTITY};
+    Entity m_slowingSfxEntity{INVALID_ENTITY};
+    std::string m_prevPlayerFsmStateForSfx;
     Entity m_camera{};
     Entity m_cameraSocket{};
     Entity m_playerRaySocket{INVALID_ENTITY};
@@ -1783,6 +1829,7 @@ private:
     float m_mouseSensitivity = 0.0048f;
 
     OpenGLRenderSystem m_gl;
+    AudioSystem m_audioSystem;
 
     const float m_rayMaxDistance = 40.0f;
     // Swept sphere radius for facing query (thick ray). 0 would be a line only.

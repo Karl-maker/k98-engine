@@ -23,6 +23,12 @@ set(WEBP_BUILD_LIBWEBPMUX OFF CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(libwebp)
 
 FetchContent_Declare(
+  miniaudio
+  URL https://github.com/mackron/miniaudio/archive/refs/tags/0.11.21.tar.gz
+)
+FetchContent_MakeAvailable(miniaudio)
+
+FetchContent_Declare(
   googletest
   URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
 )
@@ -72,11 +78,18 @@ add_executable(game_engine
   src/core/GameLoop.cpp
   src/statemachine/StateMachine.cpp
   src/core/assets/importers/GltfModelImporter.cpp
+  src/core/assets/importers/AudioImporter.cpp
+  src/audio/MiniaudioImpl.cpp
+  src/audio/AudioEngine.cpp
+  src/audio/AudioTypes.cpp
+  src/audio/AudioClipCache.cpp
+  src/systems/AudioSystem.cpp
   src/rendering/OpenGLRenderSystem.cpp
 )
 
 target_include_directories(game_engine PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/src
+  ${miniaudio_SOURCE_DIR}
 )
 
 # Lets the game find assets/sci-fi/... when the working directory is build/ or arbitrary.
