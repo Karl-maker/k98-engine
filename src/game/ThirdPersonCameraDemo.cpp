@@ -40,8 +40,10 @@
 #include "../core/SystemUpdateGroups.hpp"
 #include "../core/ThreadService.hpp"
 #include "../core/assets/importers/GltfModelImporter.hpp"
-#include "../core/assets/AnimationClipData.hpp"
+#include "../core/assets/IAsset.hpp"
 #include "../core/assets/ModelAsset.hpp"
+#include "../core/assets/AnimationClipData.hpp"
+#include "../components/StaticMeshComponent.hpp"
 #include "../math/Quat.hpp"
 #include "../math/Mat4.hpp"
 
@@ -52,7 +54,11 @@
 #include "../components/StreamingAnchorComponent.hpp"
 #include "../components/StreamableModelComponent.hpp"
 #include "../components/SkinnedMeshComponent.hpp"
+#include "../components/GpuSkinPaletteComponent.hpp"
+#include "../components/LightingComponent.hpp"
+#include "../components/HdriEnvironmentComponent.hpp"
 
+#include "../animation/AnimationSampling.hpp"
 #include "../rendering/OpenGLRenderSystem.hpp"
 
 #define GLFW_INCLUDE_NONE
@@ -68,6 +74,80 @@
 #include <algorithm>
 #include <cstdint>
 #include <random>
+
+namespace {
+
+int findIdleClipIndex(const ModelAsset& model)
+{
+    for (size_t i = 0; i < model.clips.size(); ++i) {
+        const std::string& n = model.clips[i].name;
+        if (n.find("Idle") != std::string::npos || n.find("idle") != std::string::npos)
+            return static_cast<int>(i);
+    }
+    return model.clips.empty() ? -1 : 0;
+}
+
+/// Moving state: continuous twist on `LeftHand_23` (local +Y axis).
+int appendLeftHandTwistClip(ModelAsset& model)
+{
+    auto it = model.skeleton.boneMap.find("LeftHand_23");
+    if (it == model.skeleton.boneMap.end())
+        return -1;
+    const int bi = it->second;
+    if (bi < 0 || static_cast<size_t>(bi) >= model.skeleton.bones.size())
+        return -1;
+
+    const Quat qRest = quatNormalize(model.skeleton.bones[static_cast<size_t>(bi)].restRotation);
+    constexpr float kPi = 3.14159265f;
+    const Quat qHalf = quatNormalize(quatMul(quatFromAxisAngleRad({0.f, 1.f, 0.f}, kPi), qRest));
+
+    AnimationClipData clip;
+    clip.name = "custom_left_hand_twist";
+    clip.durationSec = 3.0f;
+    ClipBoneChannel rotCh;
+    rotCh.boneIndex = bi;
+    rotCh.path = AnimChannelPath::Rotation;
+    rotCh.quatKeys.push_back({0.0f, qRest});
+    rotCh.quatKeys.push_back({1.5f, qHalf});
+    rotCh.quatKeys.push_back({3.0f, qRest});
+    clip.channels.push_back(std::move(rotCh));
+    model.clips.push_back(std::move(clip));
+    return static_cast<int>(model.clips.size() - 1);
+}
+
+/// Slowing state: forearm flex / extend on `LeftForeArm_24`.
+int appendLeftForeArmBobClip(ModelAsset& model)
+{
+    auto it = model.skeleton.boneMap.find("LeftForeArm_24");
+    if (it == model.skeleton.boneMap.end())
+        return -1;
+    const int bi = it->second;
+    if (bi < 0 || static_cast<size_t>(bi) >= model.skeleton.bones.size())
+        return -1;
+
+    const Quat qRest = quatNormalize(model.skeleton.bones[static_cast<size_t>(bi)].restRotation);
+    constexpr float kPi = 3.14159265f;
+    const float d2r = kPi / 180.f;
+    const Quat qUp = quatNormalize(quatMul(quatFromAxisAngleRad({1.f, 0.f, 0.f}, 35.f * d2r), qRest));
+    const Quat qDn = quatNormalize(quatMul(quatFromAxisAngleRad({1.f, 0.f, 0.f}, -28.f * d2r), qRest));
+
+    AnimationClipData clip;
+    clip.name = "custom_left_forearm_bob";
+    clip.durationSec = 2.5f;
+    ClipBoneChannel rotCh;
+    rotCh.boneIndex = bi;
+    rotCh.path = AnimChannelPath::Rotation;
+    rotCh.quatKeys.push_back({0.0f, qRest});
+    rotCh.quatKeys.push_back({0.6f, qUp});
+    rotCh.quatKeys.push_back({1.25f, qRest});
+    rotCh.quatKeys.push_back({1.85f, qDn});
+    rotCh.quatKeys.push_back({2.5f, qRest});
+    clip.channels.push_back(std::move(rotCh));
+    model.clips.push_back(std::move(clip));
+    return static_cast<int>(model.clips.size() - 1);
+}
+
+} // namespace
 
 class ThirdPersonCameraDemo final : public IGame
 {
@@ -86,7 +166,11 @@ public:
         m_streamingLoadService.setTrackedBoneNames({"hand"});
 
         createPlayer();
+        loadPlayerAvatarAssetFromDisk();
         attachPlayerSkeletonAnimation();
+        createHandSocketAndAttachedEnemy();
+        createLightingEntities();
+        createHdriEnvironmentEntity();
         createEnemies();
         createCameraRig();
 
@@ -141,6 +225,7 @@ public:
                 if (ww > 0 && wh > 0)
                     glfwSetCursorPos(m_gl.window(), static_cast<double>(ww) * 0.5, static_cast<double>(wh) * 0.5);
             }
+            uploadPlayerAvatarToGpu();
         }
     }
 
@@ -270,6 +355,10 @@ private:
         m_registry.registerComponent<PlayerTagComponent>();
         m_registry.registerComponent<EnemyTagComponent>();
         m_registry.registerComponent<FacingRayDriverComponent>();
+        m_registry.registerComponent<StaticMeshComponent>();
+        m_registry.registerComponent<GpuSkinPaletteComponent>();
+        m_registry.registerComponent<LightingComponent>();
+        m_registry.registerComponent<HdriEnvironmentComponent>();
     }
 
     void createPlayer()
@@ -332,6 +421,141 @@ private:
             m_registry.addComponent(e, EnemyTagComponent{static_cast<std::uint32_t>(i)});
             m_enemies.push_back(e);
         }
+    }
+
+    /// CPU load of `assets/business/man/scene.gltf` (rig + embedded idle clip; before GL init).
+    bool loadPlayerAvatarAssetFromDisk()
+    {
+        auto tryLoad = [this](const std::string& path) -> bool {
+            if (path.empty())
+                return false;
+            std::shared_ptr<IAsset> asset = m_assetManager.load(path);
+            if (!asset)
+                return false;
+            auto model = std::dynamic_pointer_cast<ModelAsset>(asset);
+            if (!model || model->meshes.empty())
+                return false;
+            m_playerAvatarModel = model;
+            m_playerAvatarPath = path;
+            std::cout << "Loaded player avatar (CPU): " << path << " (" << model->meshes.size() << " mesh parts, "
+                      << model->skeleton.bones.size() << " bones, " << model->clips.size() << " clips)\n";
+            return true;
+        };
+
+#ifdef GAME_ENGINE_PROJECT_ROOT
+        {
+            const std::string root = GAME_ENGINE_PROJECT_ROOT;
+            if (!root.empty() && tryLoad(root + "/assets/business/man/scene.gltf"))
+                return true;
+        }
+#endif
+
+        static const char* relativePaths[] = {
+            "assets/business/man/scene.gltf",
+            "../assets/business/man/scene.gltf",
+        };
+        for (const char* p : relativePaths) {
+            if (tryLoad(p))
+                return true;
+        }
+
+        std::cerr << "Note: could not load player avatar (expected assets/business/man/scene.gltf).\n";
+        return false;
+    }
+
+    /// After `m_gl.init()`, uploads meshes and adds `StaticMeshComponent` + `GpuSkinPaletteComponent`.
+    void uploadPlayerAvatarToGpu()
+    {
+        if (!m_playerAvatarModel || m_playerAvatarPath.empty())
+            return;
+        if (!m_gl.uploadStaticModel(*m_playerAvatarModel, m_playerAvatarPath)) {
+            std::cerr << "OpenGL upload failed for " << m_playerAvatarPath << "\n";
+            return;
+        }
+        StaticMeshComponent sm{};
+        sm.assetCacheKey = m_playerAvatarPath;
+        // Business man glTF is already Y-up; scale ~1 unit tall (0.02 was for tiny lynx-only tuning).
+        sm.modelSpaceRotation = Quat::Identity();
+        sm.uniformScale = 1.0f;
+        sm.gpuRegistered = true;
+        m_registry.addComponent(m_player, sm);
+        m_registry.addComponent(m_player, GpuSkinPaletteComponent{});
+        std::cout << "Uploaded player avatar to GPU: " << m_playerAvatarPath << "\n";
+    }
+
+    /// Cross-fade locomotion clips: Idle = glTF idle, Moving = LeftHand twist, Slowing = forearm bob.
+    void updatePlayerLocomotionAnimation(float dt)
+    {
+        if (m_clipIdle < 0)
+            return;
+        if (!m_registry.hasComponent<StateMachineComponent>(m_player) ||
+            !m_registry.hasComponent<AnimationPlaybackComponent>(m_player))
+            return;
+
+        auto& sm = m_registry.getComponent<StateMachineComponent>(m_player).machine;
+        auto& play = m_registry.getComponent<AnimationPlaybackComponent>(m_player);
+        const std::string& st = sm.getCurrentState();
+
+        constexpr float kFadeSpeed = 3.2f;
+
+        if (m_animCrossfadeActive) {
+            play.blendAlpha += dt * kFadeSpeed;
+            if (play.blendAlpha >= 1.f) {
+                play.primaryClip = play.secondaryClip;
+                play.secondaryClip = -1;
+                play.blendAlpha = 0.f;
+                play.speedSecondary = 0.f;
+                play.invalidatePoseCache = true;
+                m_animCrossfadeActive = false;
+            }
+            return;
+        }
+
+        int target = m_clipIdle;
+        if (st == "Moving")
+            target = m_clipMove;
+        else if (st == "Slowing")
+            target = m_clipSlow;
+
+        if (target >= 0 && target != play.primaryClip) {
+            play.secondaryClip = target;
+            play.blendAlpha = 0.f;
+            play.speedSecondary = 1.f;
+            play.loopSecondary = true;
+            play.invalidatePoseCache = true;
+            m_animCrossfadeActive = true;
+        }
+    }
+
+    void updatePlayerGpuSkin()
+    {
+        if (!m_registry.hasComponent<GpuSkinPaletteComponent>(m_player))
+            return;
+        if (!m_registry.hasComponent<SkeletonInstanceComponent>(m_player) ||
+            !m_registry.hasComponent<AnimationPlaybackComponent>(m_player))
+            return;
+
+        auto& skel = m_registry.getComponent<SkeletonInstanceComponent>(m_player);
+        if (!skel.model || skel.model->skeleton.bones.empty())
+            return;
+
+        auto& play = m_registry.getComponent<AnimationPlaybackComponent>(m_player);
+        std::vector<Mat4> global;
+        sampleAnimationBlendedFull(
+            *skel.model,
+            play.primaryClip,
+            play.timePrimary,
+            play.secondaryClip,
+            play.timeSecondary,
+            play.blendAlpha,
+            play.loopPrimary,
+            play.loopSecondary,
+            global);
+        if (global.empty())
+            return;
+
+        auto& pal = m_registry.getComponent<GpuSkinPaletteComponent>(m_player);
+        computeSkinMatrices(skel.model->skeleton, global, pal.jointSkinMatrices);
     }
 
     void createCameraRig()
@@ -427,7 +651,9 @@ private:
     void updateSimulationGroup(double dt)
     {
         const float fdt = static_cast<float>(dt);
+        updatePlayerLocomotionAnimation(fdt);
         m_animationSystem.update(m_registry, fdt);
+        updatePlayerGpuSkin();
         m_boneSyncSystem.update(m_registry);
         m_transformSystem.update(m_registry);
         m_socketSystem.update(m_registry);
@@ -677,8 +903,16 @@ private:
                 return "Player";
             if (e == m_camera)
                 return "Camera";
-            if (e == m_playerAnimBone)
-                return "Bone(hand)";
+            if (e == m_handSocketEntity)
+                return "Socket(hand)";
+            if (e == m_handAttachedEnemy)
+                return "Enemy@hand";
+            if (e == m_sunLightEntity)
+                return "Light(sun)";
+            if (e == m_ambientLightEntity)
+                return "Light(ambient)";
+            if (e == m_handLightEntity)
+                return "Light(hand)";
             for (std::size_t i = 0; i < m_enemies.size(); ++i)
             {
                 if (m_enemies[i] == e)
@@ -789,8 +1023,8 @@ private:
                       << "\n";
         }
         printRow(m_camera);
-        if (m_playerAnimBone != INVALID_ENTITY)
-            printRow(m_playerAnimBone);
+        if (m_handAttachedEnemy != INVALID_ENTITY)
+            printRow(m_handAttachedEnemy);
 
         std::cout << " " << std::string(110, '-') << "\n";
         std::cout << "\033[1;36mFacing ray (gameplay)\033[0m\n";
@@ -877,15 +1111,7 @@ private:
     {
         static constexpr float kPi = 3.14159265f;
 
-        std::cout << std::left << "Camera view (3D persp.)   Legend:  P player   1-9 enemy";
-        if (m_playerAnimBone != INVALID_ENTITY &&
-            m_registry.hasComponent<WorldTransformComponent>(m_playerAnimBone))
-        {
-            const Mat4& w = m_registry.getComponent<WorldTransformComponent>(m_playerAnimBone).world;
-            std::cout << "   | bone(hand) T: (" << std::fixed << std::setprecision(2)
-                      << w.m[12] << ", " << w.m[13] << ", " << w.m[14] << ")"
-                      << std::defaultfloat;
-        }
+        std::cout << std::left << "Camera view (3D persp.)   Legend:  P player   1-9 enemy   @hand tiny enemy on socket\n";
         std::cout << "\n";
 
         const auto& camComp = m_registry.getComponent<CameraComponent>(m_camera);
@@ -1118,45 +1344,163 @@ private:
         std::cout << "Controls: WASD (A/D strafe flipped) camera-relative | Mouse look yaw/pitch | Space jump | Esc/Q quit\n";
     }
 
-    /// In-memory skeleton + clip on the player; one tracked bone entity for gameplay/debug.
+    /// Full-body skeleton sync + clip indices: embedded idle, then custom hand/forearm clips.
     void attachPlayerSkeletonAnimation()
     {
-        auto model = std::make_shared<ModelAsset>();
-        Bone b0;
-        b0.name = "root";
-        b0.parentIndex = -1;
-        b0.restTranslation = {0.0f, 0.0f, 0.0f};
-        Bone b1;
-        b1.name = "hand";
-        b1.parentIndex = 0;
-        b1.restTranslation = {0.0f, 1.0f, 0.0f};
-        model->skeleton.bones = {b0, b1};
-        model->skeleton.boneMap["root"] = 0;
-        model->skeleton.boneMap["hand"] = 1;
+        if (!m_playerAvatarModel || m_playerAvatarModel->skeleton.bones.empty())
+            return;
 
-        AnimationClipData clip;
-        clip.name = "wave";
-        clip.durationSec = 2.0f;
-        ClipBoneChannel rotCh;
-        rotCh.boneIndex = 1;
-        rotCh.path = AnimChannelPath::Rotation;
-        rotCh.quatKeys.push_back({0.0f, quatNormalize(Quat{0.0f, 0.0f, 0.0f, 1.0f})});
-        // Y + X rotation so the hand arc is obvious in world space + full matrix debug draw.
-        rotCh.quatKeys.push_back({1.0f, quatNormalize(Quat{0.2f, 0.35f, 0.1f, 0.9f})});
-        rotCh.quatKeys.push_back({2.0f, quatNormalize(Quat{0.0f, 0.0f, 0.0f, 1.0f})});
-        clip.channels.push_back(rotCh);
-        model->clips.push_back(clip);
+        m_clipIdle = findIdleClipIndex(*m_playerAvatarModel);
+        m_clipMove = appendLeftHandTwistClip(*m_playerAvatarModel);
+        m_clipSlow = appendLeftForeArmBobClip(*m_playerAvatarModel);
+        if (m_clipMove < 0)
+            m_clipMove = m_clipIdle;
+        if (m_clipSlow < 0)
+            m_clipSlow = m_clipIdle;
 
         SkeletonInstanceComponent skel{};
-        skel.model = model;
-        skel.syncBoneIndices = {1};
+        skel.model = m_playerAvatarModel;
+        skel.syncBoneIndices.clear();
+        skel.syncBoneIndices.reserve(m_playerAvatarModel->skeleton.bones.size());
+        for (size_t i = 0; i < m_playerAvatarModel->skeleton.bones.size(); ++i)
+            skel.syncBoneIndices.push_back(static_cast<int>(i));
+
         m_registry.addComponent(m_player, std::move(skel));
         m_registry.addComponent(m_player, SkeletonPoseComponent{});
-        m_registry.addComponent(m_player, AnimationPlaybackComponent{});
 
-        m_playerAnimBone = m_registry.createEntity();
-        m_registry.addComponent(m_playerAnimBone, BoneInstanceComponent{m_player, 1});
-        m_registry.addComponent(m_playerAnimBone, WorldTransformComponent{});
+        AnimationPlaybackComponent play{};
+        play.primaryClip = m_clipIdle >= 0 ? m_clipIdle : -1;
+        play.secondaryClip = -1;
+        play.speedPrimary = 1.f;
+        play.speedSecondary = 0.f;
+        play.blendAlpha = 0.f;
+        play.loopPrimary = true;
+        play.loopSecondary = true;
+        play.invalidatePoseCache = true;
+        m_registry.addComponent(m_player, std::move(play));
+
+        m_animCrossfadeActive = false;
+
+        if (m_clipIdle >= 0)
+            std::cout << "Locomotion clips: idle=\"" << m_playerAvatarModel->clips[static_cast<size_t>(m_clipIdle)].name
+                      << "\" [" << m_clipIdle << "]  move(custom hand)=" << m_clipMove << "  slow(custom forearm)="
+                      << m_clipSlow << "\n";
+    }
+
+    /// Socket on `LeftHand_23` (tracks bone via SkeletonPose + SocketSystem). Pyramid = debug draw flag on socket.
+    ///
+    /// How to attach props: (1) Create an entity with SocketComponent; set `skeletonRoot` = player entity,
+    /// `followBoneIndex` = bone index from ModelAsset::skeleton.boneMap, `localOffset`/`localRotation` for grip
+    /// offset. (2) Run SocketSystem after TransformSystem so `worldTransform` updates. (3) Child entities use
+    /// AttachComponent with `socketEntity` = this socket; position follows `SocketComponent.worldTransform`.
+    void createHandSocketAndAttachedEnemy()
+    {
+        if (!m_playerAvatarModel)
+            return;
+        const auto it = m_playerAvatarModel->skeleton.boneMap.find("LeftHand_23");
+        if (it == m_playerAvatarModel->skeleton.boneMap.end()) {
+            std::cerr << "LeftHand_23 not in boneMap; hand socket skipped.\n";
+            return;
+        }
+        const int handBi = it->second;
+
+        m_handSocketEntity = m_registry.createEntity();
+        SocketComponent sock{};
+        sock.parentEntity = INVALID_ENTITY;
+        sock.localOffset = {0.0f, 0.0f, 0.0f};
+        sock.localRotation = {};
+        sock.worldTransform = Mat4::Identity();
+        sock.skeletonRoot = m_player;
+        sock.followBoneIndex = handBi;
+        sock.debugDrawPyramid = true;
+        m_registry.addComponent(m_handSocketEntity, sock);
+
+        m_handAttachedEnemy = m_registry.createEntity();
+        m_registry.addComponent(m_handAttachedEnemy, TransformComponent{});
+        auto& attTf = m_registry.getComponent<TransformComponent>(m_handAttachedEnemy);
+        attTf.scale = {0.28f, 0.28f, 0.28f};
+        m_registry.addComponent(m_handAttachedEnemy, WorldTransformComponent{});
+        m_registry.addComponent(m_handAttachedEnemy, EnemyTagComponent{999u});
+        m_registry.addComponent(m_handAttachedEnemy, AttachComponent{
+            m_player,
+            m_handSocketEntity,
+            {0.0f, 0.0f, 0.0f},
+            {},
+            true,
+            false});
+    }
+
+    /// ECS lights consumed by `OpenGLRenderSystem::applyTexturedSceneLighting` (fragment shader only).
+    void createLightingEntities()
+    {
+        m_sunLightEntity = m_registry.createEntity();
+        m_registry.addComponent(m_sunLightEntity, TransformComponent{});
+        m_registry.addComponent(m_sunLightEntity, WorldTransformComponent{});
+        {
+            LightingComponent sun{};
+            sun.type              = LightType::Directional;
+            sun.useEntityAxis     = false;
+            sun.worldDirectionOverride = normalize(Vec3{0.42f, -0.84f, 0.34f});
+            sun.color             = {1.0f, 0.96f, 0.88f};
+            sun.intensity         = 0.95f;
+            sun.specularPower     = 56.0f;
+            sun.specularIntensity = 0.28f;
+            sun.useHalfLambert    = true;
+            m_registry.addComponent(m_sunLightEntity, sun);
+        }
+
+        m_ambientLightEntity = m_registry.createEntity();
+        {
+            LightingComponent amb{};
+            amb.type      = LightType::Ambient;
+            amb.color     = {0.11f, 0.13f, 0.17f};
+            amb.intensity = 1.0f;
+            m_registry.addComponent(m_ambientLightEntity, amb);
+        }
+
+        if (m_handSocketEntity == INVALID_ENTITY)
+            return;
+
+        m_handLightEntity = m_registry.createEntity();
+        m_registry.addComponent(m_handLightEntity, TransformComponent{});
+        m_registry.addComponent(m_handLightEntity, WorldTransformComponent{});
+        {
+            LightingComponent hl{};
+            hl.type               = LightType::Spot;
+            hl.color              = {1.0f, 0.78f, 0.48f};
+            hl.intensity          = 4.2f;
+            hl.range              = 20.0f;
+            hl.attenLinear        = 0.12f;
+            hl.attenQuadratic     = 0.28f;
+            hl.spotInnerDegrees   = 20.0f;
+            hl.spotOuterDegrees   = 38.0f;
+            hl.specularPower      = 40.0f;
+            hl.specularIntensity  = 0.65f;
+            hl.rimIntensity       = 0.14f;
+            hl.rimPower           = 3.2f;
+            hl.useHalfLambert     = true;
+            m_registry.addComponent(m_handLightEntity, hl);
+        }
+        m_registry.addComponent(m_handLightEntity, AttachComponent{
+            m_player,
+            m_handSocketEntity,
+            {0.0f, 0.0f, 0.0f},
+            {},
+            true,
+            false});
+    }
+
+    /// Single active HDRI for `OpenGLRenderSystem` (first enabled `HdriEnvironmentComponent` wins).
+    void createHdriEnvironmentEntity()
+    {
+        m_hdriEnvEntity = m_registry.createEntity();
+        HdriEnvironmentComponent h{};
+#ifdef GAME_ENGINE_PROJECT_ROOT
+        h.hdriAssetPath = std::string(GAME_ENGINE_PROJECT_ROOT) + "/assets/lighting/hdri.webp";
+#else
+        h.hdriAssetPath = "assets/lighting/hdri.webp";
+#endif
+        m_registry.addComponent(m_hdriEnvEntity, h);
     }
 
     // -------------------------------------------------
@@ -1375,8 +1719,21 @@ private:
     CollisionSystem   m_collisionSystem;
 
     Entity m_player{};
-    /// Bone index 1 ("hand") driven by in-memory clip on `m_player`.
-    Entity m_playerAnimBone{INVALID_ENTITY};
+
+    std::shared_ptr<ModelAsset> m_playerAvatarModel;
+    std::string m_playerAvatarPath;
+
+    int  m_clipIdle = -1;
+    int  m_clipMove = -1;
+    int  m_clipSlow = -1;
+    bool m_animCrossfadeActive = false;
+
+    Entity m_handSocketEntity{INVALID_ENTITY};
+    Entity m_handAttachedEnemy{INVALID_ENTITY};
+    Entity m_sunLightEntity{INVALID_ENTITY};
+    Entity m_ambientLightEntity{INVALID_ENTITY};
+    Entity m_handLightEntity{INVALID_ENTITY};
+    Entity m_hdriEnvEntity{INVALID_ENTITY};
     Entity m_camera{};
     Entity m_cameraSocket{};
     Entity m_playerRaySocket{INVALID_ENTITY};

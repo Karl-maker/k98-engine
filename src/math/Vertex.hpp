@@ -5,6 +5,9 @@
 struct Vertex {
     float x = 0, y = 0, z = 0;
     float nx = 0, ny = 0, nz = 1;
+    float u = 0, v = 0;
+    /// glTF TANGENT (xyz + handedness w); default is a valid fallback when absent.
+    float tx = 1, ty = 0, tz = 0, tw = 1;
     /// GPU skinning: joint indices + weights (see SkinnedMeshComponent + ModelAsset::meshes).
     int boneIndex[4] = {-1, -1, -1, -1};
     float boneWeight[4] = {0, 0, 0, 0};

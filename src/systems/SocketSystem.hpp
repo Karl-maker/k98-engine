@@ -18,6 +18,7 @@
 
 #include "../ecs/Registry.hpp"
 #include "../components/SocketComponent.hpp"
+#include "../components/SkeletonPoseComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
 #include "../math/Mat4.hpp"
 
@@ -31,10 +32,25 @@ public:
         {
             auto& socket = registry.getComponent<SocketComponent>(e);
 
-            auto* parentWorld = registry.tryGetComponent<WorldTransformComponent>(socket.parentEntity);
-            if (!parentWorld) continue;
-
             Mat4 local = Mat4::FromTRS(socket.localOffset, socket.localRotation, {1.0f, 1.0f, 1.0f});
+
+            if (socket.followBoneIndex >= 0 && socket.skeletonRoot != INVALID_ENTITY) {
+                auto* pose = registry.tryGetComponent<SkeletonPoseComponent>(socket.skeletonRoot);
+                auto* rootWorld = registry.tryGetComponent<WorldTransformComponent>(socket.skeletonRoot);
+                if (!pose || !rootWorld)
+                    continue;
+                auto it = pose->globalPoseByBoneIndex.find(socket.followBoneIndex);
+                if (it == pose->globalPoseByBoneIndex.end())
+                    continue;
+                Mat4 boneWorld = mat4Mul(rootWorld->world, it->second);
+                socket.worldTransform = mat4Mul(boneWorld, local);
+                continue;
+            }
+
+            auto* parentWorld = registry.tryGetComponent<WorldTransformComponent>(socket.parentEntity);
+            if (!parentWorld)
+                continue;
+
             socket.worldTransform = mat4Mul(parentWorld->world, local);
         }
     }

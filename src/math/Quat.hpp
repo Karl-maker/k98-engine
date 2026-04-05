@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Vec3.hpp"
+
 #include <cmath>
 #include <algorithm>
 
@@ -32,6 +34,17 @@ inline Quat quatMul(const Quat& a, const Quat& b) {
         a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
         a.w * b.w - a.x * b.x - a.y * b.y - a.z * b.z
     };
+}
+
+/// Axis-angle (right-handed, radians). Axis should be non-zero; it is normalized.
+inline Quat quatFromAxisAngleRad(const Vec3& axis, float angleRad) {
+    const float lenSq = axis.x * axis.x + axis.y * axis.y + axis.z * axis.z;
+    if (lenSq < 1e-12f)
+        return Quat::Identity();
+    const float inv = 1.0f / std::sqrt(lenSq);
+    const float half = angleRad * 0.5f;
+    const float s = std::sin(half);
+    return {axis.x * inv * s, axis.y * inv * s, axis.z * inv * s, std::cos(half)};
 }
 
 inline Quat quatSlerp(const Quat& a, const Quat& b, float t) {
