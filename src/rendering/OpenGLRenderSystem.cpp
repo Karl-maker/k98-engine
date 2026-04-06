@@ -914,9 +914,58 @@ void OpenGLRenderSystem::applyHdriUniforms(unsigned int program, Registry& regis
         glUniform1f(uSp, h.specularEnvironmentWeight);
 }
 
+namespace {
+
+/// World-space grid snap for floating origin (larger = fewer origin jumps, more precision risk at cell edges).
+constexpr float kRenderOriginSnapGrid = 256.0f;
+
+Vec3 snapRenderOrigin(const Vec3& eye)
+{
+    const float g = kRenderOriginSnapGrid;
+    return {std::floor(eye.x / g) * g, std::floor(eye.y / g) * g, std::floor(eye.z / g) * g};
+}
+
+} // namespace
+
+void OpenGLRenderSystem::getFloatingOriginMatrices(
+    const Mat4& proj,
+    const Mat4& view,
+    const Vec3& snappedOrigin,
+    Mat4& outPvShifted,
+    Mat4& outTmO)
+{
+    const auto originEq = [](const Vec3& a, const Vec3& b) {
+        return std::abs(a.x - b.x) < 1e-4f && std::abs(a.y - b.y) < 1e-4f && std::abs(a.z - b.z) < 1e-4f;
+    };
+
+    const bool match = m_floatOriginCacheValid && m_floatOriginCacheFbW == m_fbW && m_floatOriginCacheFbH == m_fbH &&
+        std::memcmp(m_floatOriginCacheView, view.m, sizeof(view.m)) == 0 &&
+        std::memcmp(m_floatOriginCacheProj, proj.m, sizeof(proj.m)) == 0 && originEq(m_floatOriginCachedO, snappedOrigin);
+
+    if (match) {
+        outPvShifted = m_floatOriginPvShifted;
+        outTmO = m_floatOriginTmO;
+        return;
+    }
+
+    const Mat4 T_O = Mat4::FromTranslation(snappedOrigin);
+    outTmO = Mat4::FromTranslation({-snappedOrigin.x, -snappedOrigin.y, -snappedOrigin.z});
+    outPvShifted = mat4Mul(proj, mat4Mul(view, T_O));
+
+    m_floatOriginPvShifted = outPvShifted;
+    m_floatOriginTmO = outTmO;
+    m_floatOriginCachedO = snappedOrigin;
+    std::memcpy(m_floatOriginCacheView, view.m, sizeof(view.m));
+    std::memcpy(m_floatOriginCacheProj, proj.m, sizeof(proj.m));
+    m_floatOriginCacheFbW = m_fbW;
+    m_floatOriginCacheFbH = m_fbH;
+    m_floatOriginCacheValid = true;
+}
+
 void OpenGLRenderSystem::drawTexturedModel(
     Registry& registry,
-    const Mat4& vp,
+    const Mat4& pvShifted,
+    const Mat4& tmO,
     const Mat4& model,
     const std::string& assetCacheKey,
     const Vec3& cameraWorld) {
@@ -926,7 +975,7 @@ void OpenGLRenderSystem::drawTexturedModel(
 
     glUseProgram(m_texProgram);
 
-    Mat4 mvp = mat4Mul(vp, model);
+    Mat4 mvp = mat4Mul(pvShifted, mat4Mul(tmO, model));
 
     GLint uM = glGetUniformLocation(m_texProgram, "uModel");
     GLint uMvp = glGetUniformLocation(m_texProgram, "uMVP");
@@ -987,7 +1036,8 @@ void OpenGLRenderSystem::drawTexturedModel(
 
 void OpenGLRenderSystem::drawTexturedSkinnedModel(
     Registry& registry,
-    const Mat4& vp,
+    const Mat4& pvShifted,
+    const Mat4& tmO,
     const Mat4& model,
     const std::string& assetCacheKey,
     const std::vector<Mat4>& jointSkinMatrices,
@@ -1009,7 +1059,7 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
 
     glUseProgram(m_skinTexProgram);
 
-    Mat4 mvp = mat4Mul(vp, model);
+    Mat4 mvp = mat4Mul(pvShifted, mat4Mul(tmO, model));
 
     GLint uM = glGetUniformLocation(m_skinTexProgram, "uModel");
     GLint uMvp = glGetUniformLocation(m_skinTexProgram, "uMVP");
@@ -1128,6 +1178,7 @@ void OpenGLRenderSystem::shutdown() {
         m_hdriTexture = 0;
     }
     m_hdriLoadedPath.clear();
+    m_floatOriginCacheValid = false;
     if (m_skinPaletteUbo) {
         glDeleteBuffers(1, &m_skinPaletteUbo);
         m_skinPaletteUbo = 0;
@@ -1259,7 +1310,10 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
 
     float aspect = static_cast<float>(m_fbW) / static_cast<float>(m_fbH);
     Mat4 proj = Mat4::Perspective(cam.fov, aspect, cam.nearPlane, cam.farPlane);
-    Mat4 vp = mat4Mul(proj, view);
+    const Vec3 snappedOrigin = snapRenderOrigin(eye);
+    Mat4 pvShifted;
+    Mat4 tmO;
+    getFloatingOriginMatrices(proj, view, snappedOrigin, pvShifted, tmO);
 
     Entity playerEntity = INVALID_ENTITY;
     for (Entity e : registry.getEntitiesWith<PlayerTagComponent, TransformComponent>()) {
@@ -1290,11 +1344,11 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
         if (registry.hasComponent<GpuSkinPaletteComponent>(e)) {
             const auto& skinPal = registry.getComponent<GpuSkinPaletteComponent>(e);
             if (!skinPal.jointSkinMatrices.empty())
-                drawTexturedSkinnedModel(registry, vp, combined, smc.assetCacheKey, skinPal.jointSkinMatrices, eye);
+                drawTexturedSkinnedModel(registry, pvShifted, tmO, combined, smc.assetCacheKey, skinPal.jointSkinMatrices, eye);
             else
-                drawTexturedModel(registry, vp, combined, smc.assetCacheKey, eye);
+                drawTexturedModel(registry, pvShifted, tmO, combined, smc.assetCacheKey, eye);
         } else {
-            drawTexturedModel(registry, vp, combined, smc.assetCacheKey, eye);
+            drawTexturedModel(registry, pvShifted, tmO, combined, smc.assetCacheKey, eye);
         }
     }
 
@@ -1302,7 +1356,7 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
 
     auto drawAt = [&](const Vec3& pos, float scale, const float col[3]) {
         Mat4 model = mat4Mul(Mat4::FromTranslation(pos), Mat4::FromScale({scale, scale, scale}));
-        Mat4 mvp = mat4Mul(vp, model);
+        Mat4 mvp = mat4Mul(pvShifted, mat4Mul(tmO, model));
         drawPyramid(mvp, model, col);
     };
 
@@ -1342,7 +1396,7 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
         const Mat4& w = registry.getComponent<WorldTransformComponent>(e).world;
         const float s = 0.45f;
         Mat4 model = mat4Mul(w, Mat4::FromScale({s, s, s}));
-        Mat4 mvp = mat4Mul(vp, model);
+        Mat4 mvp = mat4Mul(pvShifted, mat4Mul(tmO, model));
         drawPyramid(mvp, model, colBone);
     }
 

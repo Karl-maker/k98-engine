@@ -42,13 +42,15 @@ private:
     void drawPyramid(const Mat4& mvp, const Mat4& model, const float color[3]);
     void drawTexturedModel(
         Registry& registry,
-        const Mat4& vp,
+        const Mat4& pvShifted,
+        const Mat4& tmO,
         const Mat4& model,
         const std::string& assetCacheKey,
         const Vec3& cameraWorld);
     void drawTexturedSkinnedModel(
         Registry& registry,
-        const Mat4& vp,
+        const Mat4& pvShifted,
+        const Mat4& tmO,
         const Mat4& model,
         const std::string& assetCacheKey,
         const std::vector<Mat4>& jointSkinMatrices,
@@ -56,6 +58,15 @@ private:
 
     void applyTexturedSceneLighting(unsigned int program, Registry& registry, const Vec3& cameraWorld);
     void applyHdriUniforms(unsigned int program, Registry& registry);
+
+    /// Fills P*V*T(O) and T(-O) with O = snappedOrigin. Reuses cached matrices when
+    /// framebuffer, proj, view, and O match the last frame (avoids redundant mat4 work).
+    void getFloatingOriginMatrices(
+        const Mat4& proj,
+        const Mat4& view,
+        const Vec3& snappedOrigin,
+        Mat4& outPvShifted,
+        Mat4& outTmO);
 
     struct StaticMeshPart {
         unsigned int vao = 0;
@@ -89,4 +100,14 @@ private:
     unsigned int m_hdriTexture = 0;
     std::string m_hdriLoadedPath;
     bool m_hdriWarnedMultiple = false;
+
+    // Floating origin (see tryGetCachedFloatingOriginMatrices).
+    Mat4 m_floatOriginPvShifted{};
+    Mat4 m_floatOriginTmO{};
+    Vec3 m_floatOriginCachedO{};
+    float m_floatOriginCacheView[16]{};
+    float m_floatOriginCacheProj[16]{};
+    int m_floatOriginCacheFbW = 0;
+    int m_floatOriginCacheFbH = 0;
+    bool m_floatOriginCacheValid = false;
 };
