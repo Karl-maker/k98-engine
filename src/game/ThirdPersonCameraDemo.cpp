@@ -38,6 +38,10 @@
 #include "../systems/TerrainEnvironmentSystem.hpp"
 #include "../systems/GravitySystem.hpp"
 #include "../systems/SolidCollisionResponseSystem.hpp"
+#include "../systems/SequenceSystem.hpp"
+
+#include "../components/SequenceComponent.hpp"
+#include "../sequence/Sequence.hpp"
 
 #include "../components/TerrainSettingsComponent.hpp"
 #include "../components/TerrainChunkComponent.hpp"
@@ -166,7 +170,7 @@ class ThirdPersonCameraDemo final : public IGame
 public:
     void onStart() override
     {
-        std::cout << "Third Person Camera Demo Started\n";
+        std::cout << "Third Person Camera Demo Started (press T for overhead taunt sequence)\n";
 
         m_threadService.configure({});
         m_threadService.start();
@@ -187,6 +191,7 @@ public:
         createTerrainSettings();
         createEnemies();
         createCameraRig();
+        createTauntShowcaseSequence();
 
         m_spatialGrid.cellSize = 4.0f;
 
@@ -272,6 +277,10 @@ public:
                 st.moveX -= 1.0f;
             if (glfwGetKey(w, GLFW_KEY_SPACE) == GLFW_PRESS)
                 st.jumpPressed = true;
+            const bool tauntDown = glfwGetKey(w, GLFW_KEY_T) == GLFW_PRESS;
+            if (tauntDown && !m_prevTauntKeyDown)
+                tryPlayTauntShowcaseSequence();
+            m_prevTauntKeyDown = tauntDown;
             if (glfwGetKey(w, GLFW_KEY_ESCAPE) == GLFW_PRESS || glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS)
             {
                 glfwSetInputMode(w, GLFW_CURSOR, GLFW_CURSOR_NORMAL);
@@ -295,10 +304,22 @@ public:
             }
 
             m_control->submitInput(m_registry, st);
+            if (m_tauntSequenceCameraOverride && m_registry.hasComponent<CameraComponent>(m_camera))
+            {
+                auto& cam = m_registry.getComponent<CameraComponent>(m_camera);
+                cam.inputDeltaX = 0.0f;
+                cam.inputDeltaY = 0.0f;
+            }
         }
         else
         {
             m_control->handleInput(m_registry);
+            if (m_tauntSequenceCameraOverride && m_registry.hasComponent<CameraComponent>(m_camera))
+            {
+                auto& cam = m_registry.getComponent<CameraComponent>(m_camera);
+                cam.inputDeltaX = 0.0f;
+                cam.inputDeltaY = 0.0f;
+            }
         }
 
         if (m_control->shouldClose() || m_gl.shouldClose())
@@ -311,6 +332,9 @@ public:
 
         // Environment first: terrain chunks + heightfield mirror (see TerrainChunkSystem).
         updateEnvironmentGroup(dt);
+
+        // Scripted sequences (e.g. taunt showcase) before actor FSM / physics integration.
+        m_sequenceSystem.update(m_registry, static_cast<float>(dt));
 
         // Gameplay / state integration (runs before transforms propagate).
         updateActors(dt);
@@ -399,6 +423,7 @@ private:
         m_registry.registerComponent<HeightMapComponent>();
         m_registry.registerComponent<MassComponent>();
         m_registry.registerComponent<PlayerMovementIntentComponent>();
+        m_registry.registerComponent<SequenceComponent>();
     }
 
     void createPlayer()
@@ -744,6 +769,93 @@ private:
         });
     }
 
+    void tryPlayTauntShowcaseSequence()
+    {
+        if (m_tauntSequenceEntity == INVALID_ENTITY || !m_registry.hasComponent<SequenceComponent>(m_tauntSequenceEntity))
+            return;
+        auto& sc = m_registry.getComponent<SequenceComponent>(m_tauntSequenceEntity);
+        if (sc.player.playing)
+            return;
+        sc.player.play();
+    }
+
+    void beginTauntShowcaseCameraAndEnemies()
+    {
+        if (!m_registry.hasComponent<CameraComponent>(m_camera))
+            return;
+
+        auto& cam = m_registry.getComponent<CameraComponent>(m_camera);
+        m_savedOrbitYaw              = cam.orbitYaw;
+        m_savedOrbitPitch            = cam.orbitPitch;
+        m_savedOrbitDistance         = cam.orbitDistance;
+        m_savedCurrentYaw            = cam.currentYaw;
+        m_savedCurrentPitch          = cam.currentPitch;
+        m_savedFollowVelocity        = cam.followPositionVelocity;
+
+        m_tauntSequenceCameraOverride = true;
+
+        cam.orbitYaw      = 0.0f;
+        cam.orbitPitch    = std::min(cam.maxPitch, 1.05f);
+        cam.orbitDistance = 17.0f;
+        cam.currentYaw    = cam.orbitYaw;
+        cam.currentPitch  = cam.orbitPitch;
+
+        for (Entity e : m_enemies)
+        {
+            if (!m_registry.hasComponent<StateMachineComponent>(e))
+                continue;
+            m_registry.getComponent<StateMachineComponent>(e).machine.forceTransitionTo("Taunt");
+        }
+    }
+
+    void finishTauntShowcaseSequence()
+    {
+        m_tauntSequenceCameraOverride = false;
+
+        if (m_registry.hasComponent<CameraComponent>(m_camera))
+        {
+            auto& cam                   = m_registry.getComponent<CameraComponent>(m_camera);
+            cam.orbitYaw                = m_savedOrbitYaw;
+            cam.orbitPitch              = m_savedOrbitPitch;
+            cam.orbitDistance           = m_savedOrbitDistance;
+            cam.currentYaw              = m_savedCurrentYaw;
+            cam.currentPitch            = m_savedCurrentPitch;
+            cam.followPositionVelocity  = m_savedFollowVelocity;
+        }
+
+        for (Entity e : m_enemies)
+        {
+            if (!m_registry.hasComponent<StateMachineComponent>(e))
+                continue;
+            auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
+            if (sm.getCurrentState() == "Taunt")
+                sm.forceTransitionTo("Idle");
+        }
+    }
+
+    void createTauntShowcaseSequence()
+    {
+        m_tauntSequence = std::make_shared<Sequence>();
+        m_tauntSequence->duration = 6.0f;
+
+        SequenceAction start{};
+        start.time   = 0.0f;
+        start.action = [this](Entity)
+        {
+            beginTauntShowcaseCameraAndEnemies();
+        };
+        m_tauntSequence->actions.push_back(std::move(start));
+
+        m_tauntSequenceEntity = m_registry.createEntity();
+        SequenceComponent sc{};
+        sc.player.sequence = m_tauntSequence;
+        sc.onFinished      = [this]()
+        {
+            finishTauntShowcaseSequence();
+        };
+        m_registry.addComponent(m_tauntSequenceEntity, std::move(sc));
+    }
+
     // -------------------------------------------------
     // Update
     // -------------------------------------------------
@@ -820,7 +932,8 @@ private:
             sm.update(dt);
             applyStateBehavior(sm, vel, dt);
 
-            if (m_registry.hasComponent<EnemyTagComponent>(e) && sm.getCurrentState() != "Chase")
+            if (m_registry.hasComponent<EnemyTagComponent>(e) && sm.getCurrentState() != "Chase" &&
+                sm.getCurrentState() != "Taunt")
             {
                 applyEnemyWander(e, vel);
             }
@@ -1840,6 +1953,41 @@ private:
             {}
         };
 
+        // Scripted “dance”: fast Y spin + slight pitch wobble (see taunt sequence).
+        config.states["Taunt"] = {
+            "Taunt",
+            [this](Entity enemy)
+            {
+                if (!m_registry.hasComponent<Velocity>(enemy))
+                    return;
+                auto& v       = m_registry.getComponent<Velocity>(enemy);
+                v.x = v.y = v.z = 0.0f;
+            },
+            [this](Entity enemy, double dt)
+            {
+                (void)dt;
+                if (!m_registry.hasComponent<Velocity>(enemy) || !m_registry.hasComponent<TransformComponent>(enemy) ||
+                    !m_registry.hasComponent<EnemyTagComponent>(enemy))
+                    return;
+                auto& v = m_registry.getComponent<Velocity>(enemy);
+                v.x     = 0.0f;
+                v.z     = 0.0f;
+
+                const std::uint32_t slot = m_registry.getComponent<EnemyTagComponent>(enemy).slot;
+                const float         phase = static_cast<float>(slot) * 0.37f;
+                const float         t     = static_cast<float>(m_elapsedTime) * 5.0f + phase;
+                const float spin          = t * 2.8f;
+                const float wobble        = std::sin(t * 2.1f) * 0.22f;
+
+                auto&       tf = m_registry.getComponent<TransformComponent>(enemy);
+                const Quat  qY = quatNormalize(quatFromAxisAngleRad({0.0f, 1.0f, 0.0f}, spin));
+                const Quat  qX = quatNormalize(quatFromAxisAngleRad({1.0f, 0.0f, 0.0f}, wobble));
+                tf.rotation    = quatNormalize(quatMul(qY, qX));
+            },
+            nullptr,
+            {}
+        };
+
         m_registry.addComponent(e, StateMachineComponent{});
         auto& sm = m_registry.getComponent<StateMachineComponent>(e).machine;
         sm.initialize(e, config);
@@ -1860,7 +2008,7 @@ private:
             return;
 
         auto& sm = m_registry.getComponent<StateMachineComponent>(hit.entity).machine;
-        if (sm.getCurrentState() == "Chase")
+        if (sm.getCurrentState() == "Chase" || sm.getCurrentState() == "Taunt")
             return;
 
         sm.forceTransitionTo("Chase");
@@ -1964,6 +2112,18 @@ private:
 
     OpenGLRenderSystem m_gl;
     AudioSystem m_audioSystem;
+
+    SequenceSystem m_sequenceSystem;
+    Entity         m_tauntSequenceEntity{INVALID_ENTITY};
+    std::shared_ptr<Sequence> m_tauntSequence;
+    bool           m_tauntSequenceCameraOverride{false};
+    float          m_savedOrbitYaw{};
+    float          m_savedOrbitPitch{};
+    float          m_savedOrbitDistance{};
+    float          m_savedCurrentYaw{};
+    float          m_savedCurrentPitch{};
+    Vec3           m_savedFollowVelocity{};
+    bool           m_prevTauntKeyDown{false};
 
     const float m_rayMaxDistance = 40.0f;
     // Swept sphere radius for facing query (thick ray). 0 would be a line only.
