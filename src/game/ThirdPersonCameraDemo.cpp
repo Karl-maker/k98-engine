@@ -25,6 +25,7 @@
 #include "../systems/SocketSystem.hpp"
 #include "../systems/AttachmentSystem.hpp"
 #include "../systems/CameraSystem.hpp"
+#include "../systems/CameraGroundClampSystem.hpp"
 #include "../systems/SpacialGridSystem.hpp"
 #include "../systems/CollisionSystem.hpp"
 #include "../systems/RaycastSystem.hpp"
@@ -34,6 +35,15 @@
 #include "../systems/CollisionLastPositionSyncSystem.hpp"
 #include "../systems/FacingRaySystem.hpp"
 #include "../systems/AudioSystem.hpp"
+#include "../systems/TerrainEnvironmentSystem.hpp"
+#include "../systems/GravitySystem.hpp"
+#include "../systems/SolidCollisionResponseSystem.hpp"
+
+#include "../components/TerrainSettingsComponent.hpp"
+#include "../components/TerrainChunkComponent.hpp"
+#include "../components/HeightMapComponent.hpp"
+#include "../components/MassComponent.hpp"
+#include "../components/PlayerMovementIntentComponent.hpp"
 
 #include "../core/assets/AssetManager.hpp"
 #include "../core/assets/StreamingLoadService.hpp"
@@ -174,6 +184,7 @@ public:
         createLightingEntities();
         createHdriEnvironmentEntity();
         createPlayerSlowingSfxEntity();
+        createTerrainSettings();
         createEnemies();
         createCameraRig();
 
@@ -215,11 +226,12 @@ public:
         {
             std::cerr << "OpenGL window init failed.\n";
             m_shouldClose = true;
-            m_control = std::make_unique<Control>(m_player, m_camera, 5.0f, 9.0f, true);
+            m_control = std::make_unique<Control>(m_player, m_camera, 5.0f, true);
+            createDemoSolidPlatform(false);
         }
         else
         {
-            m_control = std::make_unique<Control>(m_player, m_camera, 5.0f, 9.0f, false);
+            m_control = std::make_unique<Control>(m_player, m_camera, 5.0f, false);
             if (m_gl.window())
             {
                 glfwSetInputMode(m_gl.window(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
@@ -229,11 +241,16 @@ public:
                     glfwSetCursorPos(m_gl.window(), static_cast<double>(ww) * 0.5, static_cast<double>(wh) * 0.5);
             }
             uploadPlayerAvatarToGpu();
+            createDemoSolidPlatform(true);
             if (!m_audioSystem.init())
             {
                 std::cerr << "Audio engine init failed (continuing without sound).\n";
             }
         }
+
+        m_collisionLastPositionSyncSystem.seed(m_registry);
+        m_terrainEnv.snapGroundedActorsToSurface(m_registry, m_spatialGrid);
+        m_transformSystem.update(m_registry);
     }
 
     void onInput() override
@@ -292,6 +309,9 @@ public:
     {
         m_elapsedTime += dt;
 
+        // Environment first: terrain chunks + heightfield mirror (see TerrainChunkSystem).
+        updateEnvironmentGroup(dt);
+
         // Gameplay / state integration (runs before transforms propagate).
         updateActors(dt);
         m_positionToTransformSystem.update(m_registry);
@@ -301,8 +321,7 @@ public:
             m_streamingCache.setViewerPosition(m_registry.getComponent<TransformComponent>(m_player).position);
         }
 
-        // Phased systems — order: Environment → Simulation → Physics (SystemUpdateGroups.hpp).
-        updateEnvironmentGroup(dt);
+        // Simulation → Physics (SystemUpdateGroups.hpp).
         updateSimulationGroup(dt);
         updatePhysicsGroup(dt);
 
@@ -333,6 +352,12 @@ public:
     }
 
 private:
+    // Collision layers — CollisionBoxComponent::layer / collidesWithMask; rays use RayComponent::layerMask.
+    static constexpr uint32_t kLayerPlayer             = 1u << 0;
+    static constexpr uint32_t kLayerEnemyCrowd         = 1u << 1;
+    static constexpr uint32_t kLayerWorldStatic        = 1u << 2;
+    static constexpr uint32_t kFacingRayEnemyLayerMask = kLayerEnemyCrowd;
+
     // -------------------------------------------------
     // Setup
     // -------------------------------------------------
@@ -369,6 +394,11 @@ private:
         m_registry.registerComponent<LightingComponent>();
         m_registry.registerComponent<HdriEnvironmentComponent>();
         m_registry.registerComponent<AudioComponent>();
+        m_registry.registerComponent<TerrainSettingsComponent>();
+        m_registry.registerComponent<TerrainChunkComponent>();
+        m_registry.registerComponent<HeightMapComponent>();
+        m_registry.registerComponent<MassComponent>();
+        m_registry.registerComponent<PlayerMovementIntentComponent>();
     }
 
     void createPlayer()
@@ -383,14 +413,28 @@ private:
 
         {
             CollisionBoxComponent box{};
-            box.halfSize     = {m_collisionHalfX, m_collisionHalfY, m_collisionHalfZ};
-            box.lastPosition = {0.0f, 0.0f, 0.0f};
-            box.layer        = kLayerPlayer;
+            box.setBoxSize(
+                m_collisionHalfX * 2.0f,
+                m_collisionHalfY * 2.0f,
+                m_collisionHalfZ * 2.0f);
+            box.lastPosition     = {0.0f, 0.0f, 0.0f};
+            box.layer            = kLayerPlayer;
+            box.collidesWithMask = kLayerWorldStatic | kLayerEnemyCrowd;
             m_registry.addComponent(m_player, box);
         }
 
         setupPlayerStateMachine(m_player);
         m_registry.addComponent(m_player, PlayerTagComponent{});
+        m_registry.addComponent(m_player, PlayerMovementIntentComponent{});
+        {
+            MassComponent m{};
+            m.mass              = 1.0f;
+            m.gravityScale      = 1.0f;
+            m.footOffset        = 0.02f;
+            m.fallbackGroundY   = m_floorY;
+            m.solidGroundMask   = kLayerWorldStatic;
+            m_registry.addComponent(m_player, m);
+        }
     }
 
     void createEnemies()
@@ -421,15 +465,66 @@ private:
 
             {
                 CollisionBoxComponent box{};
-                box.halfSize     = {m_collisionHalfX, m_collisionHalfY, m_collisionHalfZ};
-                box.lastPosition = {startX, 0.0f, startZ};
-                box.layer        = kLayerEnemyCrowd;
+                box.setBoxSize(
+                    m_collisionHalfX * 2.0f,
+                    m_collisionHalfY * 2.0f,
+                    m_collisionHalfZ * 2.0f);
+                box.lastPosition     = {startX, 0.0f, startZ};
+                box.layer            = kLayerEnemyCrowd;
+                box.collidesWithMask = kLayerWorldStatic | kLayerPlayer;
                 m_registry.addComponent(e, box);
             }
 
             setupEnemyStateMachine(e);
             m_registry.addComponent(e, EnemyTagComponent{static_cast<std::uint32_t>(i)});
+            {
+                MassComponent m{};
+                m.mass              = 1.0f;
+                m.gravityScale      = 1.0f;
+                m.footOffset        = 0.02f;
+                m.fallbackGroundY   = m_floorY;
+                m.solidGroundMask   = kLayerWorldStatic;
+                m_registry.addComponent(e, m);
+            }
             m_enemies.push_back(e);
+        }
+    }
+
+    /// Global terrain parameters + procedural heightmap (noise biomes).
+    void createTerrainSettings()
+    {
+        m_terrainSettingsEntity = m_registry.createEntity();
+        TerrainSettingsComponent ts{};
+        ts.chunkSize    = 32;
+        ts.scale        = 1.0f;
+        ts.renderRadius = 2;
+        m_registry.addComponent(m_terrainSettingsEntity, ts);
+    }
+
+    /// Static solid AABB + optional textured mesh (same glTF upload as player). Visible only when GPU path runs.
+    void createDemoSolidPlatform(bool withStaticMesh)
+    {
+        Entity e = m_registry.createEntity();
+        m_registry.addComponent(e, TransformComponent{});
+        auto& t = m_registry.getComponent<TransformComponent>(e);
+        t.position = {10.0f, 2.5f, 4.0f};
+        m_registry.addComponent(e, WorldTransformComponent{});
+
+        CollisionBoxComponent box{};
+        box.setBoxSize(2.8f, 1.1f, 2.8f);
+        box.lastPosition     = t.position;
+        box.layer            = kLayerWorldStatic;
+        box.collidesWithMask = kLayerPlayer | kLayerEnemyCrowd;
+        box.isStatic         = true;
+        box.blocksMovement   = true;
+        m_registry.addComponent(e, box);
+
+        if (withStaticMesh && !m_playerAvatarPath.empty()) {
+            StaticMeshComponent sm{};
+            sm.assetCacheKey   = m_playerAvatarPath;
+            sm.uniformScale    = 0.2f;
+            sm.gpuRegistered   = true;
+            m_registry.addComponent(e, sm);
         }
     }
 
@@ -615,6 +710,9 @@ private:
         cam.enableLockOn = false;
         cam.lockOnTarget = INVALID_ENTITY;
 
+        cam.enableGroundHeightClamp = true;
+        cam.groundClearance         = 0.5f;
+
         m_registry.addComponent(m_camera, cam);
 
         // Start at the orbit point (CameraSystem owns position when orbit/spring is on;
@@ -654,6 +752,10 @@ private:
     void updateEnvironmentGroup(double dt)
     {
         (void)dt;
+        Vec3 viewer{0.0f, 0.0f, 0.0f};
+        if (m_registry.hasComponent<Position>(m_player))
+            viewer = m_registry.getComponent<Position>(m_player);
+        m_terrainEnv.updateStreaming(m_registry, viewer);
         m_streamingLoadService.update(m_registry);
     }
 
@@ -670,6 +772,12 @@ private:
         m_socketSystem.update(m_registry);
         m_attachmentSystem.update(m_registry);
         m_cameraSystem.update(m_registry, fdt);
+        m_cameraGroundClampSystem.update(
+            m_registry,
+            m_spatialGrid,
+            &m_terrainEnv.heightField(),
+            m_floorY,
+            kLayerWorldStatic);
         m_audioSystem.update(m_registry);
     }
 
@@ -678,6 +786,7 @@ private:
     {
         (void)dt;
         m_collisionSystem.update(m_registry, m_spatialGrid);
+        m_solidCollisionResponse.update(m_registry);
         m_facingRaySystem.update(m_registry);
         m_raycastSystem.update(m_registry);
     }
@@ -692,6 +801,17 @@ private:
             auto& pos = m_registry.getComponent<Position>(e);
             auto& vel = m_registry.getComponent<Velocity>(e);
 
+            if (e == m_player && m_registry.hasComponent<PlayerMovementIntentComponent>(m_player))
+            {
+                const auto& intent = m_registry.getComponent<PlayerMovementIntentComponent>(m_player);
+                vel.x              = intent.horizontalVelX;
+                vel.z              = intent.horizontalVelZ;
+                if (intent.jumpPressed &&
+                    GravitySystem::isGroundedForJump(
+                        m_registry, m_player, m_spatialGrid, &m_terrainEnv.heightField()))
+                    vel.y = m_playerJumpSpeed;
+            }
+
             if (e == m_player)
             {
                 updatePlayerStateIntent(sm, vel);
@@ -705,13 +825,20 @@ private:
                 applyEnemyWander(e, vel);
             }
 
-            vel.y += m_gravity * static_cast<float>(dt);
+            const float fdt = static_cast<float>(dt);
+            GravitySystem::applyGravityForEntity(m_registry, e, m_gravity, fdt);
 
-            pos.x += vel.x * static_cast<float>(dt);
-            pos.y += vel.y * static_cast<float>(dt);
-            pos.z += vel.z * static_cast<float>(dt);
+            pos.x += vel.x * fdt;
+            pos.y += vel.y * fdt;
+            pos.z += vel.z * fdt;
 
-            if (pos.y < m_floorY)
+            if (m_registry.hasComponent<MassComponent>(e))
+            {
+                const auto& mass = m_registry.getComponent<MassComponent>(e);
+                GravitySystem::resolveGroundPenetration(
+                    m_registry, m_spatialGrid, &m_terrainEnv.heightField(), e, mass);
+            }
+            else if (pos.y < m_floorY)
             {
                 pos.y = m_floorY;
                 vel.y = 0.0f;
@@ -1757,10 +1884,15 @@ private:
     BoneSyncSystem m_boneSyncSystem;
     SocketSystem m_socketSystem;
     AttachmentSystem m_attachmentSystem;
-    CameraSystem m_cameraSystem;
+    CameraSystem               m_cameraSystem;
+    CameraGroundClampSystem    m_cameraGroundClampSystem;
     SpatialGridSystem m_spatialGrid;
     RaycastSystem     m_raycastSystem{m_spatialGrid};
-    CollisionSystem   m_collisionSystem;
+    CollisionSystem              m_collisionSystem;
+    SolidCollisionResponseSystem m_solidCollisionResponse;
+
+    TerrainEnvironmentSystem m_terrainEnv;
+    Entity                   m_terrainSettingsEntity{INVALID_ENTITY};
 
     Entity m_player{};
 
@@ -1811,6 +1943,8 @@ private:
 
     const float m_floorY  = 0.0f;
     const float m_gravity = -28.0f;
+    /// Applied by gameplay when jump intent is active and the player is grounded (terrain / fallback).
+    const float m_playerJumpSpeed = 9.0f;
 
     /// Horizontal speed for enemy random walk (units / second).
     const float m_enemyWanderSpeed     = 0.42f;
@@ -1834,10 +1968,4 @@ private:
     const float m_rayMaxDistance = 40.0f;
     // Swept sphere radius for facing query (thick ray). 0 would be a line only.
     const float m_raySweepRadius = 0.55f;
-
-    // Collision layers (bit flags on CollisionBoxComponent::layer). Ray.layerMask selects what can be hit.
-    static constexpr uint32_t kLayerPlayer           = 1u << 0;
-    /// Shared by all crowd enemies so facing ray can hit any of them without per-entity bits.
-    static constexpr uint32_t kLayerEnemyCrowd       = 1u << 1;
-    static constexpr uint32_t kFacingRayEnemyLayerMask = kLayerEnemyCrowd;
 };

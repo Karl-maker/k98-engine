@@ -15,6 +15,8 @@
 #include "../components/HdriEnvironmentComponent.hpp"
 #include "../components/LightingComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
+#include "../components/TerrainChunkComponent.hpp"
+#include "../components/HeightMapComponent.hpp"
 #include "../math/Vec3.hpp"
 
 #define GLFW_INCLUDE_NONE
@@ -1172,6 +1174,7 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
 }
 
 void OpenGLRenderSystem::shutdown() {
+    releaseTerrainMeshes();
     releaseStaticModel();
     if (m_hdriTexture != 0) {
         glDeleteTextures(1, &m_hdriTexture);
@@ -1221,6 +1224,174 @@ void OpenGLRenderSystem::pollFramebufferSize(int& outW, int& outH) const {
 
 bool OpenGLRenderSystem::shouldClose() const {
     return m_window && glfwWindowShouldClose(m_window);
+}
+
+namespace {
+
+Vec3 terrainVertexNormal(const HeightMapComponent& hm, int x, int z)
+{
+    const int n = hm.size;
+    auto H = [&](int xi, int zi) {
+        xi = std::max(0, std::min(n - 1, xi));
+        zi = std::max(0, std::min(n - 1, zi));
+        return hm.get(xi, zi);
+    };
+    const float dhx = (H(x + 1, z) - H(x - 1, z)) * 0.5f;
+    const float dhz = (H(x, z + 1) - H(x, z - 1)) * 0.5f;
+    return normalize({-dhx, 1.0f, -dhz});
+}
+
+} // namespace
+
+void OpenGLRenderSystem::releaseTerrainMeshes()
+{
+    for (auto& kv : m_terrainMeshes) {
+        TerrainChunkGpuMesh& g = kv.second;
+        if (g.vao)
+            glDeleteVertexArrays(1, &g.vao);
+        if (g.vbo)
+            glDeleteBuffers(1, &g.vbo);
+        if (g.ebo)
+            glDeleteBuffers(1, &g.ebo);
+        g = {};
+    }
+    m_terrainMeshes.clear();
+}
+
+void OpenGLRenderSystem::syncTerrainMeshes(Registry& registry)
+{
+    for (auto it = m_terrainMeshes.begin(); it != m_terrainMeshes.end();) {
+        if (!registry.hasComponent<TerrainChunkComponent>(it->first)) {
+            TerrainChunkGpuMesh& g = it->second;
+            if (g.vao)
+                glDeleteVertexArrays(1, &g.vao);
+            if (g.vbo)
+                glDeleteBuffers(1, &g.vbo);
+            if (g.ebo)
+                glDeleteBuffers(1, &g.ebo);
+            it = m_terrainMeshes.erase(it);
+        } else
+            ++it;
+    }
+
+    for (Entity e : registry.getEntitiesWith<TerrainChunkComponent, HeightMapComponent, WorldTransformComponent>()) {
+        if (m_terrainMeshes.count(e) != 0)
+            continue;
+
+        const auto& hm = registry.getComponent<HeightMapComponent>(e);
+        const auto& tc = registry.getComponent<TerrainChunkComponent>(e);
+        const float cell = tc.scale;
+        const int n = hm.size;
+        const int cells = tc.size;
+
+        std::vector<float> interleaved;
+        interleaved.reserve(static_cast<size_t>(n * n * 6));
+        for (int iz = 0; iz < n; ++iz) {
+            for (int ix = 0; ix < n; ++ix) {
+                const Vec3 N = terrainVertexNormal(hm, ix, iz);
+                const float y = hm.get(ix, iz);
+                interleaved.push_back(static_cast<float>(ix) * cell);
+                interleaved.push_back(y);
+                interleaved.push_back(static_cast<float>(iz) * cell);
+                interleaved.push_back(N.x);
+                interleaved.push_back(N.y);
+                interleaved.push_back(N.z);
+            }
+        }
+
+        std::vector<unsigned int> indices;
+        indices.reserve(static_cast<size_t>(cells * cells * 6));
+        for (int iz = 0; iz < cells; ++iz) {
+            for (int ix = 0; ix < cells; ++ix) {
+                const unsigned int i00 = static_cast<unsigned int>(iz * n + ix);
+                const unsigned int i10 = static_cast<unsigned int>(iz * n + ix + 1);
+                const unsigned int i01 = static_cast<unsigned int>((iz + 1) * n + ix);
+                const unsigned int i11 = static_cast<unsigned int>((iz + 1) * n + ix + 1);
+                // CCW from +Y so front faces point up (back-face cull sees ground from above).
+                indices.push_back(i00);
+                indices.push_back(i01);
+                indices.push_back(i11);
+                indices.push_back(i00);
+                indices.push_back(i11);
+                indices.push_back(i10);
+            }
+        }
+
+        TerrainChunkGpuMesh gpu{};
+        glGenVertexArrays(1, &gpu.vao);
+        glGenBuffers(1, &gpu.vbo);
+        glGenBuffers(1, &gpu.ebo);
+        glBindVertexArray(gpu.vao);
+        glBindBuffer(GL_ARRAY_BUFFER, gpu.vbo);
+        glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)), interleaved.data(), GL_STATIC_DRAW);
+        glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.ebo);
+        glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indices.size() * sizeof(unsigned int)), indices.data(), GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+        glEnableVertexAttribArray(0);
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+        glEnableVertexAttribArray(1);
+        glBindVertexArray(0);
+        gpu.indexCount = static_cast<int>(indices.size());
+        m_terrainMeshes[e] = gpu;
+    }
+}
+
+void OpenGLRenderSystem::drawTerrainMeshes(Registry& registry, const Mat4& pvShifted, const Mat4& tmO)
+{
+    if (m_terrainMeshes.empty() || m_program == 0)
+        return;
+
+    glUseProgram(m_program);
+    GLint uM = glGetUniformLocation(m_program, "uModel");
+    GLint uMvp = glGetUniformLocation(m_program, "uMVP");
+    GLint uC = glGetUniformLocation(m_program, "uColor");
+    GLint uL = glGetUniformLocation(m_program, "uLightDir");
+    GLint uA = glGetUniformLocation(m_program, "uAmbient");
+
+    const float lightDir[3] = {0.35f, 0.85f, 0.35f};
+    float len = std::sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
+    float ld[3] = {lightDir[0] / len, lightDir[1] / len, lightDir[2] / len};
+    const float amb[3] = {0.18f, 0.2f, 0.24f};
+
+    glUniform3fv(uL, 1, ld);
+    glUniform3fv(uA, 1, amb);
+
+    const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
+    glEnable(GL_CULL_FACE);
+    glCullFace(GL_BACK);
+
+    for (const auto& kv : m_terrainMeshes) {
+        Entity e = kv.first;
+        if (!registry.hasComponent<WorldTransformComponent>(e))
+            continue;
+        const Mat4& model = registry.getComponent<WorldTransformComponent>(e).world;
+        Mat4 mvp = mat4Mul(pvShifted, mat4Mul(tmO, model));
+
+        float avgH = 2.0f;
+        if (registry.hasComponent<HeightMapComponent>(e)) {
+            const auto& hm = registry.getComponent<HeightMapComponent>(e);
+            float s = 0.f;
+            const int nn = hm.size;
+            for (int i = 0; i < nn * nn; ++i)
+                s += hm.heights[static_cast<size_t>(i)];
+            avgH = s / static_cast<float>(nn * nn);
+        }
+        const float g = 0.02f;
+        const float col[3] = {0.22f + g * avgH, 0.48f + g * avgH * 0.5f, 0.18f + g * avgH};
+
+        glUniformMatrix4fv(uM, 1, GL_FALSE, model.m);
+        glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m);
+        glUniform3fv(uC, 1, col);
+
+        glBindVertexArray(kv.second.vao);
+        glDrawElements(GL_TRIANGLES, kv.second.indexCount, GL_UNSIGNED_INT, nullptr);
+    }
+    glBindVertexArray(0);
+
+    if (!cullWas)
+        glDisable(GL_CULL_FACE);
+
+    glUseProgram(m_program);
 }
 
 void OpenGLRenderSystem::drawPyramid(const Mat4& mvp, const Mat4& model, const float color[3]) {
@@ -1314,6 +1485,9 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
     Mat4 pvShifted;
     Mat4 tmO;
     getFloatingOriginMatrices(proj, view, snappedOrigin, pvShifted, tmO);
+
+    syncTerrainMeshes(registry);
+    drawTerrainMeshes(registry, pvShifted, tmO);
 
     Entity playerEntity = INVALID_ENTITY;
     for (Entity e : registry.getEntitiesWith<PlayerTagComponent, TransformComponent>()) {

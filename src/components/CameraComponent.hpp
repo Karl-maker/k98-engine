@@ -78,4 +78,9 @@ struct CameraComponent {
 
     float inputVelocityX{0.0f};
     float inputVelocityY{0.0f};
+
+    // ---- Ground height clamp (run CameraGroundClampSystem after CameraSystem) ----
+    bool  enableGroundHeightClamp{false};
+    /// Camera eye Y must stay >= sampled ground Y + this clearance (terrain + static tops under xz).
+    float groundClearance{0.45f};
 };

@@ -2,6 +2,7 @@
 
 #include "../ecs/Registry.hpp"
 #include "../game/Components.hpp"
+#include "../components/PlayerMovementIntentComponent.hpp"
 #include "../components/StateMachineComponent.hpp"
 #include "../components/CameraComponent.hpp"
 #include "../components/TransformComponent.hpp"
@@ -27,15 +28,16 @@ struct InputState
 };
 
 // ----------------------------------
+/// Maps hardware input → movement intent + camera deltas. Does not apply physics,
+/// terrain checks, or jump velocity — the game does that from PlayerMovementIntentComponent.
 class Control
 {
 public:
     /// When `useTerminalInput` is false (e.g. GLFW window), call `submitInput` instead of `handleInput`.
-    Control(Entity player, Entity camera, float speed, float jumpSpeed = 9.0f, bool useTerminalInput = true)
+    Control(Entity player, Entity camera, float speed, bool useTerminalInput = true)
         : m_player(player)
         , m_camera(camera)
         , m_speed(speed)
-        , m_jumpSpeed(jumpSpeed)
         , m_useTerminalInput(useTerminalInput)
     {
         if (m_useTerminalInput)
@@ -75,7 +77,7 @@ public:
 private:
     void applyInput(Registry& registry, const InputState& input)
     {
-        applyPlayerMovement(registry, input);
+        applyPlayerMovementIntent(registry, input);
         applyCameraInput(registry, input);
 
         if (input.quit)
@@ -105,13 +107,14 @@ private:
         }
     }
 
-    void applyPlayerMovement(Registry& registry, const InputState& input)
+    void applyPlayerMovementIntent(Registry& registry, const InputState& input)
     {
-        auto& sm  = registry.getComponent<StateMachineComponent>(m_player).machine;
-        auto& pos = registry.getComponent<Position>(m_player);
-        auto& vel = registry.getComponent<Velocity>(m_player);
+        auto& sm = registry.getComponent<StateMachineComponent>(m_player).machine;
+        if (!registry.hasComponent<PlayerMovementIntentComponent>(m_player))
+            return;
 
-        // Default: world -Z forward, +X right (matches camera orbit yaw = 0)
+        auto& intent = registry.getComponent<PlayerMovementIntentComponent>(m_player);
+
         float fx = 0.0f;
         float fz = -1.0f;
         float rx = 1.0f;
@@ -168,18 +171,9 @@ private:
         }
 
         const float fwdIn = -mz;
-        vel.x = (mx * rx + fwdIn * fx) * m_speed;
-        vel.z = (mx * rz + fwdIn * fz) * m_speed;
-
-        constexpr float kFloorY      = 0.0f;
-        constexpr float kGroundedEps = 0.02f;
-        const bool      grounded =
-            pos.y <= kFloorY + kGroundedEps && vel.y <= 0.0f;
-
-        if (input.jumpPressed && grounded)
-        {
-            vel.y = m_jumpSpeed;
-        }
+        intent.horizontalVelX = (mx * rx + fwdIn * fx) * m_speed;
+        intent.horizontalVelZ = (mx * rz + fwdIn * fz) * m_speed;
+        intent.jumpPressed    = input.jumpPressed;
 
         if (input.moveX != 0.0f || input.moveZ != 0.0f)
             sm.handleEvent(StateEventType::MoveUp);
@@ -224,10 +218,9 @@ private:
     Entity m_camera;
 
     float m_speed;
-    float m_jumpSpeed;
     bool m_useTerminalInput = true;
     bool m_shouldClose = false;
-    
+
     bool m_rotateLeft = false;
     bool m_rotateRight = false;
 

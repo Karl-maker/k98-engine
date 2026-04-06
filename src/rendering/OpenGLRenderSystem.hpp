@@ -1,5 +1,6 @@
 #pragma once
 
+#include "../ecs/Entity.hpp"
 #include "../ecs/Registry.hpp"
 #include "../math/Mat4.hpp"
 #include "../math/Vec3.hpp"
@@ -59,6 +60,17 @@ private:
     void applyTexturedSceneLighting(unsigned int program, Registry& registry, const Vec3& cameraWorld);
     void applyHdriUniforms(unsigned int program, Registry& registry);
 
+    struct TerrainChunkGpuMesh {
+        unsigned int vao = 0;
+        unsigned int vbo = 0;
+        unsigned int ebo = 0;
+        int indexCount = 0;
+    };
+
+    void syncTerrainMeshes(Registry& registry);
+    void drawTerrainMeshes(Registry& registry, const Mat4& pvShifted, const Mat4& tmO);
+    void releaseTerrainMeshes();
+
     /// Fills P*V*T(O) and T(-O) with O = snappedOrigin. Reuses cached matrices when
     /// framebuffer, proj, view, and O match the last frame (avoids redundant mat4 work).
     void getFloatingOriginMatrices(
@@ -110,4 +122,6 @@ private:
     int m_floatOriginCacheFbW = 0;
     int m_floatOriginCacheFbH = 0;
     bool m_floatOriginCacheValid = false;
+
+    std::unordered_map<Entity, TerrainChunkGpuMesh> m_terrainMeshes;
 };

@@ -54,9 +54,17 @@ public:
         {
             auto& box = registry.getComponent<CollisionBoxComponent>(e);
             auto& transform = registry.getComponent<TransformComponent>(e);
-    
-            box.min = transform.position - box.halfSize;
-            box.max = transform.position + box.halfSize;
+
+            box.applyAuthoringToHalfExtents();
+
+            if (box.primitive == CollisionPrimitive::Sphere) {
+                const float r = box.halfSize.x > 1e-6f ? box.halfSize.x : 0.5f;
+                box.min = transform.position - Vec3{r, r, r};
+                box.max = transform.position + Vec3{r, r, r};
+            } else {
+                box.min = transform.position - box.halfSize;
+                box.max = transform.position + box.halfSize;
+            }
     
             if (ProximityUtils::distanceSquared(transform.position, box.lastPosition) > 0.0001f)
             {
@@ -86,6 +94,10 @@ public:
                 if (e >= other) continue;
     
                 auto& boxB = registry.getComponent<CollisionBoxComponent>(other);
+
+                if ((boxA.layer & boxB.collidesWithMask) == 0u ||
+                    (boxB.layer & boxA.collidesWithMask) == 0u)
+                    continue;
     
                 // skip static-static
                 if (boxA.isStatic && boxB.isStatic)
