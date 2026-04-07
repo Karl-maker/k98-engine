@@ -1,6 +1,7 @@
 #pragma once
 
 #include "../math/Quat.hpp"
+#include "../math/Vec3.hpp"
 #include <string>
 
 // -----------------------------------------------------------------------------
@@ -22,6 +23,9 @@ struct StaticMeshComponent {
     Quat modelSpaceRotation = Quat::Identity();
 
     float uniformScale = 0.14f;
+
+    /// Extra translation in model space after rotation and scale (e.g. sink feet to match ground).
+    Vec3 modelSpaceTranslation{0.0f, 0.0f, 0.0f};
 
     bool gpuRegistered = false;
 };

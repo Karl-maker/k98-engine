@@ -4,8 +4,11 @@
 #include "../ecs/Registry.hpp"
 #include "../math/Mat4.hpp"
 #include "../math/Vec3.hpp"
+#include "IRenderPass.hpp"
+#include "RenderContext.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -13,14 +16,29 @@
 struct GLFWwindow;
 class ModelAsset;
 
+/// Window / vsync options for `init`.
+struct OpenGLInitOptions {
+    /// 0 = no vsync, 1 = interval-swap with display (typical).
+    int swapInterval = 1;
+};
+
+/// Filled each frame when debug HUD is enabled (see `setDebugHudSnapshot`).
+struct OpenGLDebugHudSnapshot {
+    bool enabled = false;
+    float fps = 0.f;
+    int entityCount = 0;
+    std::string locomotionState;
+    int targetFpsPreset = 60;
+};
+
 // =============================================================================
-// OpenGLRenderSystem — debug primitives + static glTF draws driven by ECS.
-// Textured meshes: entities with StaticMeshComponent + Transform (see renderFrame).
-// Also: active camera, EnemyTag pyramids, BoneInstance pyramids, PlayerTag pyramid fallback.
+// OpenGLRenderSystem — window/context, GPU mesh cache, and ordered IRenderPass
+// execution. Default passes: terrain, static/skinned glTF, optional player marker.
+// Register additional passes or replace the pipeline via clearRenderPasses().
 // =============================================================================
 class OpenGLRenderSystem {
 public:
-    bool init(int width, int height, const char* title);
+    bool init(int width, int height, const char* title, const OpenGLInitOptions& options = {});
     void shutdown();
 
     void pollFramebufferSize(int& outW, int& outH) const;
@@ -29,8 +47,19 @@ public:
     /// Upload meshes/materials; `assetCacheKey` must match StaticMeshComponent::assetCacheKey when drawing.
     bool uploadStaticModel(const ModelAsset& model, const std::string& assetCacheKey);
 
-    /// Reads `registry` only: first active `CameraComponent`, tagged player/enemies, bone instances.
+    void registerRenderPass(std::unique_ptr<IRenderPass> pass);
+    void clearRenderPasses();
+    /// Clears and installs built-in terrain + mesh + player-fallback passes.
+    void installDefaultRenderPasses();
+
+    /// Pass entry points (used by built-in IRenderPass implementations).
+    void executeTerrainPass(RenderContext& ctx);
+    void executeStaticSkinnedMeshesPass(RenderContext& ctx);
+    void executeDebugPlayerFallbackPass(RenderContext& ctx);
+
     void renderFrame(Registry& registry);
+
+    void setDebugHudSnapshot(OpenGLDebugHudSnapshot snapshot);
 
     bool shouldClose() const;
 
@@ -80,6 +109,9 @@ private:
         Mat4& outPvShifted,
         Mat4& outTmO);
 
+    void buildDebugHudPipeline();
+    void drawDebugHudOverlay();
+
     struct StaticMeshPart {
         unsigned int vao = 0;
         unsigned int vbo = 0;
@@ -124,4 +156,12 @@ private:
     bool m_floatOriginCacheValid = false;
 
     std::unordered_map<Entity, TerrainChunkGpuMesh> m_terrainMeshes;
+
+    std::vector<std::unique_ptr<IRenderPass>> m_renderPasses;
+
+    OpenGLDebugHudSnapshot m_debugHud{};
+    unsigned int m_debugHudProgram = 0;
+    unsigned int m_debugHudVao = 0;
+    unsigned int m_debugHudVbo = 0;
+    int m_debugHudLocFbSize = -1;
 };

@@ -32,15 +32,18 @@
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 #include <cctype>
 #include <cstddef>
 #include <cstring>
+#include <cstdio>
 #include <fstream>
 #include <iostream>
 #include <string>
 #include <vector>
 
 #include "stb_image.h"
+#include "stb_easy_font.h"
 #include <webp/decode.h>
 
 namespace {
@@ -173,6 +176,31 @@ void main() {
     float ndl = max(dot(N, L), 0.0);
     vec3 c = uColor * (uAmbient + vec3(0.55) * ndl);
     FragColor = vec4(c, 1.0);
+}
+)";
+
+// Pixel coordinates: origin top-left, +Y downward (matches stb_easy_font). Maps to clip space in-shader.
+static const char* kHudVertSrc = R"(
+#version 330 core
+layout (location = 0) in vec2 aPixelPos;
+layout (location = 1) in vec4 aColor;
+uniform vec2 uFbSize;
+out vec4 vColor;
+void main() {
+    vColor = aColor;
+    vec2 ndc;
+    ndc.x = (aPixelPos.x / uFbSize.x) * 2.0 - 1.0;
+    ndc.y = 1.0 - (aPixelPos.y / uFbSize.y) * 2.0;
+    gl_Position = vec4(ndc, 0.0, 1.0);
+}
+)";
+
+static const char* kHudFragSrc = R"(
+#version 330 core
+in vec4 vColor;
+out vec4 FragColor;
+void main() {
+    FragColor = vColor;
 }
 )";
 
@@ -462,7 +490,7 @@ static GLuint compileShader(GLenum type, const char* src) {
     return s;
 }
 
-bool OpenGLRenderSystem::init(int width, int height, const char* title) {
+bool OpenGLRenderSystem::init(int width, int height, const char* title, const OpenGLInitOptions& options) {
     if (!glfwInit()) {
         std::cerr << "glfwInit failed\n";
         return false;
@@ -483,7 +511,7 @@ bool OpenGLRenderSystem::init(int width, int height, const char* title) {
     }
 
     glfwMakeContextCurrent(m_window);
-    glfwSwapInterval(1);
+    glfwSwapInterval(options.swapInterval);
 
 #if !defined(__APPLE__)
     glewExperimental = GL_TRUE;
@@ -530,6 +558,10 @@ bool OpenGLRenderSystem::init(int width, int height, const char* title) {
     glBufferData(GL_UNIFORM_BUFFER, kSkinUboBytes, nullptr, GL_DYNAMIC_DRAW);
     glBindBufferBase(GL_UNIFORM_BUFFER, 1, m_skinPaletteUbo);
     glBindBuffer(GL_UNIFORM_BUFFER, 0);
+
+    installDefaultRenderPasses();
+
+    buildDebugHudPipeline();
 
     return true;
 }
@@ -626,6 +658,199 @@ void OpenGLRenderSystem::buildSkinnedTexturedShaderPipeline() {
         if (skinBlock != GL_INVALID_INDEX)
             glUniformBlockBinding(m_skinTexProgram, skinBlock, 1);
     }
+}
+
+void OpenGLRenderSystem::buildDebugHudPipeline()
+{
+    GLuint vs = compileShader(GL_VERTEX_SHADER, kHudVertSrc);
+    GLuint fs = compileShader(GL_FRAGMENT_SHADER, kHudFragSrc);
+    if (!vs || !fs)
+        return;
+    m_debugHudProgram = glCreateProgram();
+    glAttachShader(m_debugHudProgram, vs);
+    glAttachShader(m_debugHudProgram, fs);
+    glLinkProgram(m_debugHudProgram);
+    glDeleteShader(vs);
+    glDeleteShader(fs);
+    GLint linked = 0;
+    glGetProgramiv(m_debugHudProgram, GL_LINK_STATUS, &linked);
+    if (!linked) {
+        char log[1024];
+        glGetProgramInfoLog(m_debugHudProgram, sizeof(log), nullptr, log);
+        std::cerr << "Debug HUD program link: " << log << "\n";
+        glDeleteProgram(m_debugHudProgram);
+        m_debugHudProgram = 0;
+        return;
+    }
+
+    m_debugHudLocFbSize = glGetUniformLocation(m_debugHudProgram, "uFbSize");
+
+    glGenVertexArrays(1, &m_debugHudVao);
+    glGenBuffers(1, &m_debugHudVbo);
+    glBindVertexArray(m_debugHudVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_debugHudVbo);
+    glBufferData(GL_ARRAY_BUFFER, 0, nullptr, GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, static_cast<GLsizei>(6 * sizeof(float)), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(
+        1,
+        4,
+        GL_FLOAT,
+        GL_FALSE,
+        static_cast<GLsizei>(6 * sizeof(float)),
+        (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void OpenGLRenderSystem::setDebugHudSnapshot(OpenGLDebugHudSnapshot snapshot)
+{
+    m_debugHud = std::move(snapshot);
+}
+
+void OpenGLRenderSystem::drawDebugHudOverlay()
+{
+    if (!m_debugHud.enabled || !m_debugHudProgram || !m_window)
+        return;
+
+    char text[768];
+    std::snprintf(
+        text,
+        sizeof(text),
+        "FPS: %.1f (preset %d)\nEntities: %d\nLocomotion: %.48s",
+        static_cast<double>(m_debugHud.fps),
+        m_debugHud.targetFpsPreset,
+        m_debugHud.entityCount,
+        m_debugHud.locomotionState.empty() ? "-" : m_debugHud.locomotionState.c_str());
+
+    const int textW = stb_easy_font_width(text);
+    const int textH = stb_easy_font_height(text);
+    const float pad   = 8.0f;
+    const float textX = pad + 4.0f;
+    const float textY = pad + 4.0f;
+    const float panelX0 = 2.0f;
+    const float panelY0 = 2.0f;
+    const float panelX1 = std::max(320.0f, textX + static_cast<float>(textW) + pad + 4.0f);
+    const float panelY1 = textY + static_cast<float>(textH) + pad + 4.0f;
+
+    alignas(16) unsigned char stbBuf[256000];
+    const int numQuads =
+        stb_easy_font_print(textX, textY, text, nullptr, stbBuf, static_cast<int>(sizeof(stbBuf)));
+
+    std::vector<float> tri;
+    tri.reserve(static_cast<size_t>(numQuads) * 6u * 6u + 36u);
+
+    auto pushVert = [&](float x, float y, float r, float g, float b, float a) {
+        tri.push_back(x);
+        tri.push_back(y);
+        tri.push_back(r);
+        tri.push_back(g);
+        tri.push_back(b);
+        tri.push_back(a);
+    };
+
+    auto pushVertBytes = [&](float x, float y, const unsigned char* rgba) {
+        pushVert(
+            x,
+            y,
+            static_cast<float>(rgba[0]) / 255.0f,
+            static_cast<float>(rgba[1]) / 255.0f,
+            static_cast<float>(rgba[2]) / 255.0f,
+            static_cast<float>(rgba[3]) / 255.0f);
+    };
+
+    // Opaque-ish panel behind text (top-left, pixel space, +Y down) so the HUD is always visible.
+    const float pr = 0.06f, pg = 0.06f, pb = 0.09f, pa = 0.94f;
+    pushVert(panelX0, panelY0, pr, pg, pb, pa);
+    pushVert(panelX1, panelY0, pr, pg, pb, pa);
+    pushVert(panelX1, panelY1, pr, pg, pb, pa);
+    pushVert(panelX0, panelY0, pr, pg, pb, pa);
+    pushVert(panelX1, panelY1, pr, pg, pb, pa);
+    pushVert(panelX0, panelY1, pr, pg, pb, pa);
+
+    for (int q = 0; q < numQuads; ++q) {
+        const unsigned char* base = stbBuf + static_cast<size_t>(q) * 64u;
+        float x0, y0, x1, y1, x2, y2, x3, y3;
+        unsigned char c0[4], c1[4], c2[4], c3[4];
+        std::memcpy(&x0, base + 0, 4);
+        std::memcpy(&y0, base + 4, 4);
+        std::memcpy(c0, base + 12, 4);
+        std::memcpy(&x1, base + 16, 4);
+        std::memcpy(&y1, base + 20, 4);
+        std::memcpy(c1, base + 28, 4);
+        std::memcpy(&x2, base + 32, 4);
+        std::memcpy(&y2, base + 36, 4);
+        std::memcpy(c2, base + 44, 4);
+        std::memcpy(&x3, base + 48, 4);
+        std::memcpy(&y3, base + 52, 4);
+        std::memcpy(c3, base + 60, 4);
+
+        pushVertBytes(x0, y0, c0);
+        pushVertBytes(x1, y1, c1);
+        pushVertBytes(x2, y2, c2);
+        pushVertBytes(x0, y0, c0);
+        pushVertBytes(x2, y2, c2);
+        pushVertBytes(x3, y3, c3);
+    }
+
+    const GLsizei vertCount = static_cast<GLsizei>(tri.size() / 6u);
+    if (vertCount <= 0)
+        return;
+
+    // Other passes may leave culling / scissor / depth mask in a state that hides screen-space HUD
+    // (especially back-face cull with stb_easy_font quad winding). Reset for the overlay pass.
+    const GLboolean depthWas = glIsEnabled(GL_DEPTH_TEST);
+    const GLboolean blendWas = glIsEnabled(GL_BLEND);
+    const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
+    const GLboolean scissorWas = glIsEnabled(GL_SCISSOR_TEST);
+    GLboolean colorMask[4];
+    glGetBooleanv(GL_COLOR_WRITEMASK, colorMask);
+
+    glDisable(GL_CULL_FACE);
+    glDisable(GL_SCISSOR_TEST);
+    glDisable(GL_DEPTH_TEST);
+    glDepthMask(GL_FALSE);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    glViewport(0, 0, m_fbW, m_fbH);
+
+    glUseProgram(m_debugHudProgram);
+    if (m_debugHudLocFbSize >= 0)
+        glUniform2f(m_debugHudLocFbSize, static_cast<float>(m_fbW), static_cast<float>(m_fbH));
+
+    glBindVertexArray(m_debugHudVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_debugHudVbo);
+    glBufferData(
+        GL_ARRAY_BUFFER,
+        static_cast<GLsizeiptr>(tri.size() * sizeof(float)),
+        tri.data(),
+        GL_DYNAMIC_DRAW);
+    // Re-specify attribs after buffer orphaning (some drivers — notably macOS — need this for dynamic VBOs).
+    const GLsizei stride = static_cast<GLsizei>(6 * sizeof(float));
+    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, stride, (void*)0);
+    glVertexAttribPointer(1, 4, GL_FLOAT, GL_FALSE, stride, (void*)(2 * sizeof(float)));
+    glEnableVertexAttribArray(0);
+    glEnableVertexAttribArray(1);
+
+    glDrawArrays(GL_TRIANGLES, 0, vertCount);
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glUseProgram(0);
+
+    glDepthMask(GL_TRUE);
+    glColorMask(colorMask[0], colorMask[1], colorMask[2], colorMask[3]);
+    if (depthWas)
+        glEnable(GL_DEPTH_TEST);
+    if (!blendWas)
+        glDisable(GL_BLEND);
+    if (cullWas)
+        glEnable(GL_CULL_FACE);
+    if (scissorWas)
+        glEnable(GL_SCISSOR_TEST);
 }
 
 void OpenGLRenderSystem::releaseGpuMeshesForKey(const std::string& assetCacheKey) {
@@ -749,6 +974,13 @@ bool OpenGLRenderSystem::uploadStaticModel(const ModelAsset& model, const std::s
 
 void OpenGLRenderSystem::applyTexturedSceneLighting(unsigned int program, Registry& registry, const Vec3& cameraWorld) {
     Vec3 ambient(0.06f, 0.07f, 0.09f);
+    for (Entity he : registry.getEntitiesWith<HdriEnvironmentComponent>()) {
+        const auto& h = registry.getComponent<HdriEnvironmentComponent>(he);
+        if (h.enabled && !h.hdriAssetPath.empty()) {
+            ambient = {0.0f, 0.0f, 0.0f};
+            break;
+        }
+    }
     float posType[8 * 4]{};
     float dirRange[8 * 4]{};
     float colorInt[8 * 4]{};
@@ -1174,6 +1406,7 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
 }
 
 void OpenGLRenderSystem::shutdown() {
+    clearRenderPasses();
     releaseTerrainMeshes();
     releaseStaticModel();
     if (m_hdriTexture != 0) {
@@ -1205,6 +1438,19 @@ void OpenGLRenderSystem::shutdown() {
     if (m_program) {
         glDeleteProgram(m_program);
         m_program = 0;
+    }
+    if (m_debugHudVbo) {
+        glDeleteBuffers(1, &m_debugHudVbo);
+        m_debugHudVbo = 0;
+    }
+    if (m_debugHudVao) {
+        glDeleteVertexArrays(1, &m_debugHudVao);
+        m_debugHudVao = 0;
+    }
+    if (m_debugHudProgram) {
+        glDeleteProgram(m_debugHudProgram);
+        m_debugHudProgram = 0;
+        m_debugHudLocFbSize = -1;
     }
     if (m_window) {
         glfwDestroyWindow(m_window);
@@ -1419,6 +1665,190 @@ void OpenGLRenderSystem::drawPyramid(const Mat4& mvp, const Mat4& model, const f
     glBindVertexArray(0);
 }
 
+namespace {
+
+Vec3 worldTranslationFromRegistry(Registry& registry, Entity e)
+{
+    if (registry.hasComponent<WorldTransformComponent>(e)) {
+        const Mat4& w = registry.getComponent<WorldTransformComponent>(e).world;
+        return {w.m[12], w.m[13], w.m[14]};
+    }
+    if (registry.hasComponent<TransformComponent>(e))
+        return registry.getComponent<TransformComponent>(e).position;
+    return {0.0f, 0.0f, 0.0f};
+}
+
+class TerrainRenderPass final : public IRenderPass {
+public:
+    explicit TerrainRenderPass(OpenGLRenderSystem* r)
+        : m_r(r)
+    {
+    }
+    int sortKey() const override { return 100; }
+    void render(RenderContext& ctx) override
+    {
+        if (!ctx.registry || !m_r)
+            return;
+        m_r->executeTerrainPass(ctx);
+    }
+
+private:
+    OpenGLRenderSystem* m_r = nullptr;
+};
+
+class StaticSkinnedMeshRenderPass final : public IRenderPass {
+public:
+    explicit StaticSkinnedMeshRenderPass(OpenGLRenderSystem* r)
+        : m_r(r)
+    {
+    }
+    int sortKey() const override { return 200; }
+    void render(RenderContext& ctx) override
+    {
+        if (!ctx.registry || !m_r)
+            return;
+        m_r->executeStaticSkinnedMeshesPass(ctx);
+    }
+
+private:
+    OpenGLRenderSystem* m_r = nullptr;
+};
+
+class PlayerFallbackRenderPass final : public IRenderPass {
+public:
+    explicit PlayerFallbackRenderPass(OpenGLRenderSystem* r)
+        : m_r(r)
+    {
+    }
+    int sortKey() const override { return 300; }
+    void render(RenderContext& ctx) override
+    {
+        if (!ctx.registry || !m_r)
+            return;
+        m_r->executeDebugPlayerFallbackPass(ctx);
+    }
+
+private:
+    OpenGLRenderSystem* m_r = nullptr;
+};
+
+} // namespace
+
+void OpenGLRenderSystem::registerRenderPass(std::unique_ptr<IRenderPass> pass)
+{
+    if (!pass)
+        return;
+    m_renderPasses.push_back(std::move(pass));
+    std::stable_sort(
+        m_renderPasses.begin(),
+        m_renderPasses.end(),
+        [](const std::unique_ptr<IRenderPass>& a, const std::unique_ptr<IRenderPass>& b) {
+            return a->sortKey() < b->sortKey();
+        });
+}
+
+void OpenGLRenderSystem::clearRenderPasses()
+{
+    m_renderPasses.clear();
+}
+
+void OpenGLRenderSystem::installDefaultRenderPasses()
+{
+    clearRenderPasses();
+    registerRenderPass(std::make_unique<TerrainRenderPass>(this));
+    registerRenderPass(std::make_unique<StaticSkinnedMeshRenderPass>(this));
+    registerRenderPass(std::make_unique<PlayerFallbackRenderPass>(this));
+}
+
+void OpenGLRenderSystem::executeTerrainPass(RenderContext& ctx)
+{
+    if (!ctx.registry)
+        return;
+    syncTerrainMeshes(*ctx.registry);
+    drawTerrainMeshes(*ctx.registry, ctx.pvShifted, ctx.tmO);
+}
+
+void OpenGLRenderSystem::executeStaticSkinnedMeshesPass(RenderContext& ctx)
+{
+    if (!ctx.registry)
+        return;
+    Registry& registry = *ctx.registry;
+
+    for (Entity e : registry.getEntitiesWith<StaticMeshComponent, TransformComponent>()) {
+        auto& smc = registry.getComponent<StaticMeshComponent>(e);
+        if (!smc.gpuRegistered || smc.assetCacheKey.empty())
+            continue;
+        if (m_gpuMeshByAssetKey.find(smc.assetCacheKey) == m_gpuMeshByAssetKey.end())
+            continue;
+
+        Mat4 base = Mat4::Identity();
+        if (registry.hasComponent<WorldTransformComponent>(e))
+            base = registry.getComponent<WorldTransformComponent>(e).world;
+        else {
+            const auto& t = registry.getComponent<TransformComponent>(e);
+            base = Mat4::FromTRS(t.position, t.rotation, t.scale);
+        }
+
+        const Mat4 R = Mat4::FromTR({0.0f, 0.0f, 0.0f}, smc.modelSpaceRotation);
+        const Mat4 S = Mat4::FromScale({smc.uniformScale, smc.uniformScale, smc.uniformScale});
+        const Mat4 Tm = Mat4::FromTranslation(smc.modelSpaceTranslation);
+        const Mat4 combined = mat4Mul(mat4Mul(mat4Mul(base, R), S), Tm);
+
+        if (registry.hasComponent<GpuSkinPaletteComponent>(e)) {
+            const auto& skinPal = registry.getComponent<GpuSkinPaletteComponent>(e);
+            if (!skinPal.jointSkinMatrices.empty())
+                drawTexturedSkinnedModel(
+                    registry,
+                    ctx.pvShifted,
+                    ctx.tmO,
+                    combined,
+                    smc.assetCacheKey,
+                    skinPal.jointSkinMatrices,
+                    ctx.cameraWorld);
+            else
+                drawTexturedModel(
+                    registry, ctx.pvShifted, ctx.tmO, combined, smc.assetCacheKey, ctx.cameraWorld);
+        } else {
+            drawTexturedModel(
+                registry, ctx.pvShifted, ctx.tmO, combined, smc.assetCacheKey, ctx.cameraWorld);
+        }
+    }
+}
+
+void OpenGLRenderSystem::executeDebugPlayerFallbackPass(RenderContext& ctx)
+{
+    if (!ctx.registry)
+        return;
+    Registry& registry = *ctx.registry;
+
+    glUseProgram(m_program);
+
+    Entity playerEntity = INVALID_ENTITY;
+    for (Entity e : registry.getEntitiesWith<PlayerTagComponent, TransformComponent>()) {
+        playerEntity = e;
+        break;
+    }
+
+    auto drawAt = [&](const Vec3& pos, float scale, const float col[3]) {
+        Mat4 model = mat4Mul(Mat4::FromTranslation(pos), Mat4::FromScale({scale, scale, scale}));
+        Mat4 mvp = mat4Mul(ctx.pvShifted, mat4Mul(ctx.tmO, model));
+        drawPyramid(mvp, model, col);
+    };
+
+    const float colPlayer[3] = {0.2f, 0.75f, 0.35f};
+
+    bool playerHasRenderableMesh = false;
+    if (playerEntity != INVALID_ENTITY && registry.hasComponent<StaticMeshComponent>(playerEntity)) {
+        const auto& sm = registry.getComponent<StaticMeshComponent>(playerEntity);
+        playerHasRenderableMesh =
+            sm.gpuRegistered && !sm.assetCacheKey.empty() &&
+            m_gpuMeshByAssetKey.find(sm.assetCacheKey) != m_gpuMeshByAssetKey.end();
+    }
+
+    if (playerEntity != INVALID_ENTITY && !playerHasRenderableMesh)
+        drawAt(worldTranslationFromRegistry(registry, playerEntity), 1.15f, colPlayer);
+}
+
 void OpenGLRenderSystem::renderFrame(Registry& registry) {
     if (!m_window || !m_program)
         return;
@@ -1448,17 +1878,7 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
 
     auto& cam = registry.getComponent<CameraComponent>(cameraEntity);
 
-    auto worldTranslation = [&](Entity e) -> Vec3 {
-        if (registry.hasComponent<WorldTransformComponent>(e)) {
-            const Mat4& w = registry.getComponent<WorldTransformComponent>(e).world;
-            return {w.m[12], w.m[13], w.m[14]};
-        }
-        if (registry.hasComponent<TransformComponent>(e))
-            return registry.getComponent<TransformComponent>(e).position;
-        return {0.0f, 0.0f, 0.0f};
-    };
-
-    const Vec3 eye = worldTranslation(cameraEntity);
+    const Vec3 eye = worldTranslationFromRegistry(registry, cameraEntity);
 
     Entity lookTarget = INVALID_ENTITY;
     if (cam.enableLockOn && cam.lockOnTarget != INVALID_ENTITY)
@@ -1486,93 +1906,22 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
     Mat4 tmO;
     getFloatingOriginMatrices(proj, view, snappedOrigin, pvShifted, tmO);
 
-    syncTerrainMeshes(registry);
-    drawTerrainMeshes(registry, pvShifted, tmO);
+    RenderContext ctx;
+    ctx.registry     = &registry;
+    ctx.renderer     = this;
+    ctx.pvShifted    = pvShifted;
+    ctx.tmO          = tmO;
+    ctx.cameraWorld  = eye;
 
-    Entity playerEntity = INVALID_ENTITY;
-    for (Entity e : registry.getEntitiesWith<PlayerTagComponent, TransformComponent>()) {
-        playerEntity = e;
-        break;
+    if (m_renderPasses.empty())
+        installDefaultRenderPasses();
+
+    for (auto& pass : m_renderPasses) {
+        if (pass)
+            pass->render(ctx);
     }
 
-    for (Entity e : registry.getEntitiesWith<StaticMeshComponent, TransformComponent>())
-    {
-        auto& smc = registry.getComponent<StaticMeshComponent>(e);
-        if (!smc.gpuRegistered || smc.assetCacheKey.empty())
-            continue;
-        if (m_gpuMeshByAssetKey.find(smc.assetCacheKey) == m_gpuMeshByAssetKey.end())
-            continue;
-
-        Mat4 base = Mat4::Identity();
-        if (registry.hasComponent<WorldTransformComponent>(e))
-            base = registry.getComponent<WorldTransformComponent>(e).world;
-        else {
-            const auto& t = registry.getComponent<TransformComponent>(e);
-            base = Mat4::FromTRS(t.position, t.rotation, t.scale);
-        }
-
-        const Mat4 R = Mat4::FromTR({0.0f, 0.0f, 0.0f}, smc.modelSpaceRotation);
-        const Mat4 S = Mat4::FromScale({smc.uniformScale, smc.uniformScale, smc.uniformScale});
-        const Mat4 combined = mat4Mul(mat4Mul(base, R), S);
-
-        if (registry.hasComponent<GpuSkinPaletteComponent>(e)) {
-            const auto& skinPal = registry.getComponent<GpuSkinPaletteComponent>(e);
-            if (!skinPal.jointSkinMatrices.empty())
-                drawTexturedSkinnedModel(registry, pvShifted, tmO, combined, smc.assetCacheKey, skinPal.jointSkinMatrices, eye);
-            else
-                drawTexturedModel(registry, pvShifted, tmO, combined, smc.assetCacheKey, eye);
-        } else {
-            drawTexturedModel(registry, pvShifted, tmO, combined, smc.assetCacheKey, eye);
-        }
-    }
-
-    glUseProgram(m_program);
-
-    auto drawAt = [&](const Vec3& pos, float scale, const float col[3]) {
-        Mat4 model = mat4Mul(Mat4::FromTranslation(pos), Mat4::FromScale({scale, scale, scale}));
-        Mat4 mvp = mat4Mul(pvShifted, mat4Mul(tmO, model));
-        drawPyramid(mvp, model, col);
-    };
-
-    const float colPlayer[3] = {0.2f, 0.75f, 0.35f};
-    const float colEnemy[3] = {0.85f, 0.35f, 0.2f};
-    const float colBone[3] = {0.9f, 0.85f, 0.2f};
-
-    bool playerHasRenderableMesh = false;
-    if (playerEntity != INVALID_ENTITY && registry.hasComponent<StaticMeshComponent>(playerEntity)) {
-        const auto& sm = registry.getComponent<StaticMeshComponent>(playerEntity);
-        playerHasRenderableMesh =
-            sm.gpuRegistered && !sm.assetCacheKey.empty() &&
-            m_gpuMeshByAssetKey.find(sm.assetCacheKey) != m_gpuMeshByAssetKey.end();
-    }
-
-    if (playerEntity != INVALID_ENTITY && !playerHasRenderableMesh) {
-        drawAt(worldTranslation(playerEntity), 1.15f, colPlayer);
-    }
-
-    for (Entity e : registry.getEntitiesWith<EnemyTagComponent, TransformComponent>()) {
-        const auto& t = registry.getComponent<TransformComponent>(e);
-        const float sx = std::max(std::max(t.scale.x, t.scale.y), t.scale.z);
-        drawAt(worldTranslation(e), 1.05f * sx, colEnemy);
-    }
-
-    for (Entity e : registry.getEntitiesWith<SocketComponent>()) {
-        const auto& sock = registry.getComponent<SocketComponent>(e);
-        if (!sock.debugDrawPyramid)
-            continue;
-        const Mat4& wt = sock.worldTransform;
-        const Vec3 p{wt.m[12], wt.m[13], wt.m[14]};
-        drawAt(p, 0.28f, colBone);
-    }
-
-    for (Entity e : registry.getEntitiesWith<BoneInstanceComponent, WorldTransformComponent>())
-    {
-        const Mat4& w = registry.getComponent<WorldTransformComponent>(e).world;
-        const float s = 0.45f;
-        Mat4 model = mat4Mul(w, Mat4::FromScale({s, s, s}));
-        Mat4 mvp = mat4Mul(pvShifted, mat4Mul(tmO, model));
-        drawPyramid(mvp, model, colBone);
-    }
+    drawDebugHudOverlay();
 
     glfwSwapBuffers(m_window);
 }
