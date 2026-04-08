@@ -7,5 +7,11 @@ enum class StateEventType
     MoveLeft,
     MoveRight,
     Stop,
-    UserDetected
+    UserDetected,
+
+    /// Locomotion tutorial / third-person run states
+    SprintPress,
+    SprintRelease,
+    Jump,
+    Landed,
 };

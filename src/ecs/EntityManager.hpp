@@ -84,6 +84,8 @@ public:
         return livingEntities;
     }
 
+    size_t getAliveEntityCount() const { return livingEntities.size(); }
+
 private:
     std::queue<Entity> availableEntities{};
     std::array<Signature, MAX_ENTITIES> signatures{};

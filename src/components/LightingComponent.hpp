@@ -4,7 +4,7 @@
 #include <cstdint>
 
 // -----------------------------------------------------------------------------
-// LightingComponent — evaluated in OpenGLRenderSystem (fragment shader). Entity
+// LightingComponent — evaluated in the textured fragment shader (OpenGLVer2Renderer). Entity
 // should have WorldTransformComponent (socket attach, hierarchy, or root transform).
 //
 // Light types:

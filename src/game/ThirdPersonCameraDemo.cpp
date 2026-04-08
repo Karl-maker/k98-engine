@@ -75,7 +75,7 @@
 #include "../components/AudioComponent.hpp"
 
 #include "../animation/AnimationSampling.hpp"
-#include "../rendering/OpenGLRenderSystem.hpp"
+#include "../graphics/opengl/OpenGLVer2Renderer.hpp"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -889,7 +889,8 @@ private:
             m_spatialGrid,
             &m_terrainEnv.heightField(),
             m_floorY,
-            kLayerWorldStatic);
+            kLayerWorldStatic,
+            fdt);
         m_audioSystem.update(m_registry);
     }
 
@@ -1682,7 +1683,7 @@ private:
             false});
     }
 
-    /// ECS lights consumed by `OpenGLRenderSystem::applyTexturedSceneLighting` (fragment shader only).
+    /// ECS lights consumed by `OpenGLVer2Renderer::applyTexturedSceneLighting` (fragment shader only).
     void createLightingEntities()
     {
         m_sunLightEntity = m_registry.createEntity();
@@ -1742,7 +1743,7 @@ private:
             false});
     }
 
-    /// Single active HDRI for `OpenGLRenderSystem` (first enabled `HdriEnvironmentComponent` wins).
+    /// Single active HDRI for `OpenGLVer2Renderer` (first enabled `HdriEnvironmentComponent` wins).
     void createHdriEnvironmentEntity()
     {
         m_hdriEnvEntity = m_registry.createEntity();
@@ -2110,7 +2111,7 @@ private:
     /// Mouse delta → orbit input (used with centered cursor; window-coordinate deltas).
     float m_mouseSensitivity = 0.0048f;
 
-    OpenGLRenderSystem m_gl;
+    OpenGLVer2Renderer m_gl;
     AudioSystem m_audioSystem;
 
     SequenceSystem m_sequenceSystem;

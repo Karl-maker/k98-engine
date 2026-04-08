@@ -4,7 +4,7 @@
 
 // -----------------------------------------------------------------------------
 // HdriEnvironmentComponent — equirectangular environment map for IBL (diffuse +
-// specular) in OpenGLRenderSystem. Only **one** active HDRI is used per frame (first
+// specular) in OpenGLVer2Renderer. Only **one** active HDRI is used per frame (first
 // enabled entity wins; additional entities are ignored with a one-time warning).
 //
 // Supports .png / .jpg / .jpeg / .bmp / .tga via stb_image, and .webp via libwebp.

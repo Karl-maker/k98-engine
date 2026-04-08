@@ -103,6 +103,8 @@ public:
     // -------------------------
     // NEW: FILTERED QUERY
     // -------------------------
+    size_t getAliveEntityCount() const { return entityManager.getAliveEntityCount(); }
+
     template<typename... Components>
     std::vector<Entity> getEntitiesWith()
     {

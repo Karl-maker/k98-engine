@@ -83,4 +83,7 @@ struct CameraComponent {
     bool  enableGroundHeightClamp{false};
     /// Camera eye Y must stay >= sampled ground Y + this clearance (terrain + static tops under xz).
     float groundClearance{0.45f};
+    /// Internal: smoothed terrain height sample (reduces eye bob when the sample flickers).
+    float groundClampSmoothedY{0.f};
+    bool  groundClampSmoothedInit{false};
 };

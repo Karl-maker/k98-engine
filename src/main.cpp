@@ -1,19 +1,45 @@
 #include "core/SystemClock.hpp"
-#include "game/ThirdPersonCameraDemo.cpp"
 #include "core/GameLoop.hpp"
+#include "core/GameLoopPreset.hpp"
+#include "game/MovementTutorialSettings.hpp"
+#include "game/MovementTutorial.cpp"
 
 #include <iostream>
+#include <string>
 
-int main()
+static void parseArgs(int argc, char** argv, GameLoopPreset& outPreset, bool& outDebugHud)
 {
-    ThirdPersonCameraDemo game;
+    outPreset   = GameLoopPreset::Fps120;
+    outDebugHud = false;
+    for (int i = 1; i < argc; ++i) {
+        std::string a = argv[i];
+        if (a == "--120" || a == "--fps=120")
+            outPreset = GameLoopPreset::Fps120;
+        else if (a == "--60" || a == "--fps=60")
+            outPreset = GameLoopPreset::Fps60;
+        else if (a == "--debug" || a == "-d")
+            outDebugHud = true;
+    }
+}
+
+int main(int argc, char** argv)
+{
+    GameLoopPreset preset;
+    bool debugHud = true;
+    parseArgs(argc, argv, preset, debugHud);
+
+    MovementTutorialSettings gameSettings;
+    gameSettings.openglDebugHud = debugHud;
+    gameSettings.glSwapInterval = 1;
+    gameSettings.targetFpsPreset =
+        (preset == GameLoopPreset::Fps120) ? 120 : 60;
+
+    MovementTutorial game(gameSettings);
     SystemClock clock;
 
-    GameLoopConfig config;
-    config.targetUpdatesPerSecond = 60;
-    config.maxFramesPerSecond = 60;
-    config.maxFrameTimeSeconds = 0.25;
-    config.maxUpdatesPerFrame = 5;
+    GameLoopConfig config = makeGameLoopConfig(preset);
+
+    std::cout << "Movement Tutorial — presets: --60 | --120   debug: --debug   toggle HUD: L in-game\n";
 
     GameLoop loop(game, clock, config);
     loop.run();

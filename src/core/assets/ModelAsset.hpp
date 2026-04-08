@@ -46,4 +46,15 @@ public:
     std::vector<Material> materials;
     Skeleton skeleton;
     std::vector<AnimationClipData> clips;
+
+    /// Drop CPU vertex/index arrays after GPU upload; keeps materials + skeleton + clips for animation.
+    void releaseMeshGeometry()
+    {
+        for (Mesh& m : meshes) {
+            m.vertices.clear();
+            m.vertices.shrink_to_fit();
+            m.indices.clear();
+            m.indices.shrink_to_fit();
+        }
+    }
 };

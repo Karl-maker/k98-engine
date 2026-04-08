@@ -63,9 +63,22 @@ public:
     }
 
 private:
-    static void fillHeightMap(HeightMapComponent& hm, int cx, int cz, float stride, float cellSize)
+    static void fillHeightMap(
+        HeightMapComponent& hm,
+        int cx,
+        int cz,
+        float stride,
+        float cellSize,
+        const TerrainSettingsComponent& settings)
     {
         const int n = hm.size;
+        if (settings.flatTerrain) {
+            for (int z = 0; z < n; ++z) {
+                for (int x = 0; x < n; ++x)
+                    hm.set(x, z, settings.flatTerrainHeight);
+            }
+            return;
+        }
         for (int z = 0; z < n; ++z) {
             for (int x = 0; x < n; ++x) {
                 const float wx = static_cast<float>(cx) * stride + static_cast<float>(x) * cellSize;
@@ -101,7 +114,7 @@ private:
         HeightMapComponent hm{};
         hm.size = settings.chunkSize + 1;
         hm.heights.assign(static_cast<size_t>(hm.size * hm.size), 0.0f);
-        fillHeightMap(hm, cx, cz, stride, cellSize);
+        fillHeightMap(hm, cx, cz, stride, cellSize, settings);
 
         TerrainChunkComponent tc{};
         tc.chunkX = cx;

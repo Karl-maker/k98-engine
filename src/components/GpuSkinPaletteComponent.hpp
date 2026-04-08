@@ -6,7 +6,7 @@
 // -----------------------------------------------------------------------------
 // GpuSkinPaletteComponent — joint skin matrices (global * inverseBind) for the
 // entity's rig, uploaded by gameplay each frame after sampling animation.
-// OpenGLRenderSystem uses this with StaticMeshComponent when non-empty.
+// OpenGLVer2Renderer uses this with StaticMeshComponent when non-empty.
 // Register: registry.registerComponent<GpuSkinPaletteComponent>();
 // -----------------------------------------------------------------------------
 
