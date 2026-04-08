@@ -104,6 +104,11 @@ public:
                 vel.y = 0.0f;
             }
 
+            // Without this, gravity re-builds negative vy every frame while supported; resolveGroundPenetration
+            // then snaps Y up → sub-pixel jitter on flat terrain / heightfield.
+            if (GravitySystem::isGroundedForJump(registry, e, grid, terrain) && vel.y <= 0.0f)
+                vel.y = 0.0f;
+
             if (registry.hasComponent<TransformComponent>(e)) {
                 auto& tf = registry.getComponent<TransformComponent>(e);
                 tf.position.x = pos.x;

@@ -4,8 +4,9 @@
 #include <string>
 
 // -----------------------------------------------------------------------------
-// Optional 2D texture binding for render passes. `glTexture` is 0 until a
-// loader/upload step assigns it (MovementTutorial uses this for extension points).
+// Optional single 2D texture binding for simple passes. For full PBR sets
+// (albedo, normal, AO, roughness, displacement) use PbrTextureSetComponent or
+// PbrMaterialPresetComponent instead.
 // -----------------------------------------------------------------------------
 
 struct Texture2DGlComponent {

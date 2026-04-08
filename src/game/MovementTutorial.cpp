@@ -24,6 +24,7 @@
 #include "../components/GpuSkinPaletteComponent.hpp"
 #include "../components/StateMachineComponent.hpp"
 #include "../components/TerrainSettingsComponent.hpp"
+#include "../components/PbrMaterialPresetComponent.hpp"
 #include "../components/TerrainChunkComponent.hpp"
 #include "../components/HeightMapComponent.hpp"
 #include "../components/Texture2DGlComponent.hpp"
@@ -57,7 +58,9 @@
 #include "../components/SkeletonPoseComponent.hpp"
 #include "../components/AnimationPlaybackComponent.hpp"
 
-#include "../rendering/OpenGLRenderSystem.hpp"
+#include "../graphics/GraphicsTypes.hpp"
+#include "../graphics/IGraphicsRenderer.hpp"
+#include "../graphics/opengl/OpenGLVer2Renderer.hpp"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -71,6 +74,7 @@
 #include <iostream>
 #include <memory>
 #include <string>
+#include <utility>
 
 // =============================================================================
 // Movement tutorial: flat terrain, locomotion FSM (Idle / Moving / Sprinting /
@@ -103,26 +107,29 @@ public:
 
         m_positionToTransformSystem.update(m_registry);
 
-        OpenGLInitOptions glOpts;
+        m_renderer = std::make_unique<OpenGLVer2Renderer>();
+        GraphicsInitOptions glOpts;
         glOpts.swapInterval = m_settings.glSwapInterval;
-        if (!m_gl.init(1280, 720, "Movement Tutorial", glOpts)) {
+        if (!m_renderer->init(1280, 720, "Movement Tutorial", glOpts)) {
             std::cerr << "OpenGL init failed (headless path not implemented).\n";
             m_shouldClose = true;
             return;
         }
 
-        if (m_gl.window()) {
-            glfwSetInputMode(m_gl.window(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        m_renderer->uploadPbrMaterialPresets(m_registry);
+
+        if (m_renderer->window()) {
+            glfwSetInputMode(m_renderer->window(), GLFW_CURSOR, GLFW_CURSOR_DISABLED);
             int ww = 0, wh = 0;
-            glfwGetWindowSize(m_gl.window(), &ww, &wh);
+            glfwGetWindowSize(m_renderer->window(), &ww, &wh);
             if (ww > 0 && wh > 0)
-                glfwSetCursorPos(m_gl.window(), static_cast<double>(ww) * 0.5, static_cast<double>(wh) * 0.5);
+                glfwSetCursorPos(m_renderer->window(), static_cast<double>(ww) * 0.5, static_cast<double>(wh) * 0.5);
         }
 
         if (m_playerAvatarModel) {
             // Slight -Y aligns glTF root with capsule feet (physics uses footOffset = halfHeight).
             game::factories::SkinnedCharacterActorFactory::uploadToGpuAndAttach(
-                m_gl,
+                *m_renderer,
                 m_registry,
                 m_player,
                 m_playerAvatarModel,
@@ -147,12 +154,12 @@ public:
 
     void onInput() override
     {
-        if (!m_gl.window())
+        if (!m_renderer || !m_renderer->window())
             return;
 
         glfwPollEvents();
 
-        GLFWwindow* w = m_gl.window();
+        GLFWwindow* w = m_renderer->window();
         auto& ctrl      = m_registry.getComponent<LocomotorControlComponent>(m_player);
 
         ctrl.forward = 0.0f;
@@ -162,9 +169,9 @@ public:
         if (glfwGetKey(w, GLFW_KEY_S) == GLFW_PRESS)
             ctrl.forward -= 1.0f;
         if (glfwGetKey(w, GLFW_KEY_D) == GLFW_PRESS)
-            ctrl.right += 1.0f;
-        if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS)
             ctrl.right -= 1.0f;
+        if (glfwGetKey(w, GLFW_KEY_A) == GLFW_PRESS)
+            ctrl.right += 1.0f;
 
         ctrl.sprintHeld = glfwGetKey(w, GLFW_KEY_LEFT_SHIFT) == GLFW_PRESS;
 
@@ -199,12 +206,15 @@ public:
             glfwSetCursorPos(w, cx, cy);
         }
 
-        if (m_gl.shouldClose())
+        if (m_renderer->shouldClose())
             m_shouldClose = true;
     }
 
     void onUpdate(double dt) override
     {
+        for (Entity pe : m_registry.getEntitiesWith<Position>())
+            m_registry.getComponent<Position>(pe).syncPreviousFromCurrent();
+
         Vec3 viewer{0.0f, 0.0f, 0.0f};
         if (m_registry.hasComponent<Position>(m_player))
             viewer = m_registry.getComponent<Position>(m_player);
@@ -222,20 +232,22 @@ public:
 
         m_positionToTransformSystem.update(m_registry);
 
-        const float fdt = static_cast<float>(dt);
-        m_animationSystem.update(m_registry, fdt);
-        game::factories::SkinnedCharacterActorFactory::updateGpuSkinPalette(m_registry, m_player);
-
         m_transformSystem.update(m_registry);
         m_attachmentSystem.update(m_registry);
 
+        const float fdt = static_cast<float>(dt);
         m_cameraSystem.update(m_registry, fdt);
+        updatePlayerFacingFromCamera();
         m_cameraGroundClampSystem.update(
             m_registry,
             m_spatialGrid,
             &m_terrainEnv.heightField(),
             m_floorY,
-            kLayerWorldStatic);
+            kLayerWorldStatic,
+            fdt);
+
+        m_animationSystem.update(m_registry, fdt);
+        game::factories::SkinnedCharacterActorFactory::updateGpuSkinPalette(m_registry, m_player);
 
         m_collisionSystem.update(m_registry, m_spatialGrid);
         m_solidCollisionResponse.update(m_registry);
@@ -243,6 +255,8 @@ public:
 
     void onRender(double) override
     {
+        if (!m_renderer)
+            return;
         using clock = std::chrono::steady_clock;
         const auto now = clock::now();
         if (m_haveLastFrameTime) {
@@ -264,11 +278,11 @@ public:
         if (m_player != INVALID_ENTITY && m_registry.hasComponent<StateMachineComponent>(m_player))
             hud.locomotionState =
                 m_registry.getComponent<StateMachineComponent>(m_player).machine.getCurrentState();
-        m_gl.setDebugHudSnapshot(std::move(hud));
+        m_renderer->setDebugHudSnapshot(std::move(hud));
 
-        m_gl.renderFrame(m_registry);
+        m_renderer->renderFrame(m_registry);
 
-        if (m_debugHudEnabled && m_gl.window()) {
+        if (m_debugHudEnabled && m_renderer->window()) {
             char title[512];
             const char* st = "-";
             if (m_player != INVALID_ENTITY && m_registry.hasComponent<StateMachineComponent>(m_player))
@@ -280,17 +294,18 @@ public:
                 static_cast<double>(m_fpsSmooth),
                 st,
                 static_cast<int>(m_registry.getAliveEntityCount()));
-            glfwSetWindowTitle(m_gl.window(), title);
-        } else if (m_gl.window()) {
-            glfwSetWindowTitle(m_gl.window(), "Movement Tutorial");
+            glfwSetWindowTitle(m_renderer->window(), title);
+        } else if (m_renderer->window()) {
+            glfwSetWindowTitle(m_renderer->window(), "Movement Tutorial");
         }
     }
 
     void onStop() override
     {
-        if (m_gl.window())
-            glfwSetInputMode(m_gl.window(), GLFW_CURSOR, GLFW_CURSOR_NORMAL);
-        m_gl.shutdown();
+        if (m_renderer && m_renderer->window())
+            glfwSetInputMode(m_renderer->window(), GLFW_CURSOR, GLFW_CURSOR_NORMAL);
+        if (m_renderer)
+            m_renderer->shutdown();
         std::cout << "Movement Tutorial stopped.\n";
     }
 
@@ -322,7 +337,7 @@ private:
         m_registry.registerComponent<HdriEnvironmentComponent>();
         m_registry.registerComponent<Texture2DGlComponent>();
         m_registry.registerComponent<ShaderPipelineComponent>();
-        /// Required by OpenGLRenderSystem::executeStaticSkinnedMeshesPass queries even when no mesh entities exist.
+        /// Required by renderer pass queries even when no mesh entities exist.
         m_registry.registerComponent<StaticMeshComponent>();
         m_registry.registerComponent<GpuSkinPaletteComponent>();
         m_registry.registerComponent<SocketComponent>();
@@ -330,6 +345,7 @@ private:
         m_registry.registerComponent<SkeletonInstanceComponent>();
         m_registry.registerComponent<SkeletonPoseComponent>();
         m_registry.registerComponent<AnimationPlaybackComponent>();
+        m_registry.registerComponent<PbrMaterialPresetComponent>();
     }
 
     void createTerrainSettingsFlat()
@@ -342,6 +358,11 @@ private:
         ts.flatTerrain        = true;
         ts.flatTerrainHeight  = 0.0f;
         m_registry.addComponent(e, ts);
+
+        PbrMaterialPresetComponent surf{};
+        surf.presetRootRelative = "assets/textures/Hex-Tile";
+        surf.surfaceUvRepeats   = 4.0f;
+        m_registry.addComponent(e, surf);
     }
 
     static bool wantsMoveGuard(Registry& reg, Entity o)
@@ -353,6 +374,44 @@ private:
     static bool sprintHeldGuard(Registry& reg, Entity o)
     {
         return reg.getComponent<LocomotorControlComponent>(o).sprintHeld;
+    }
+
+    /// Horizontal facing matches camera look (same basis as LocomotorIntentSystem) when locomoting.
+    void updatePlayerFacingFromCamera()
+    {
+        if (m_player == INVALID_ENTITY || m_camera == INVALID_ENTITY)
+            return;
+        if (!m_registry.hasComponent<StateMachineComponent>(m_player) ||
+            !m_registry.hasComponent<TransformComponent>(m_player))
+            return;
+
+        const std::string& st = m_registry.getComponent<StateMachineComponent>(m_player).machine.getCurrentState();
+        if (st == "Idle")
+            return;
+
+        if (!m_registry.hasComponent<TransformComponent>(m_camera) || !m_registry.hasComponent<CameraComponent>(m_camera))
+            return;
+
+        auto& camComp = m_registry.getComponent<CameraComponent>(m_camera);
+        auto& camTf   = m_registry.getComponent<TransformComponent>(m_camera);
+        Entity lookTarget = m_player;
+        if (camComp.enableLookAt && camComp.lookAtTarget != INVALID_ENTITY)
+            lookTarget = camComp.lookAtTarget;
+
+        float yaw = camComp.currentYaw;
+        if (lookTarget != INVALID_ENTITY && m_registry.hasComponent<TransformComponent>(lookTarget)) {
+            const auto& tgtTf = m_registry.getComponent<TransformComponent>(lookTarget);
+            const float dx =
+                (tgtTf.position.x + camComp.lookAtOffset.x) - camTf.position.x;
+            const float dz =
+                (tgtTf.position.z + camComp.lookAtOffset.z) - camTf.position.z;
+            const float hDist = std::sqrt(dx * dx + dz * dz);
+            if (hDist > 1.0e-5f)
+                yaw = std::atan2(dx, dz);
+        }
+
+        auto& playerTf    = m_registry.getComponent<TransformComponent>(m_player);
+        playerTf.rotation = quatFromAxisAngleRad({0.0f, 1.0f, 0.0f}, yaw);
     }
 
     void setupPlayerStateMachine(Entity e)
@@ -506,7 +565,8 @@ private:
         cam.lookAtTarget             = m_player;
         cam.lookAtOffset             = {0.0f, 1.05f, 0.0f};
         cam.enableOrbit              = true;
-        cam.orbitYaw                 = 0.0f;
+        // Orbit offset uses (sin(yaw), cos(yaw)) on XZ; yaw=0 puts the camera on +Z. π flips to −Z (behind typical forward/+Z character).
+        cam.orbitYaw                 = 3.14159265f;
         cam.orbitPitch               = 0.35f;
         cam.orbitDistance            = 6.0f;
         cam.orbitSensitivity         = 0.58f;
@@ -569,7 +629,7 @@ private:
     std::shared_ptr<ModelAsset> m_playerAvatarModel;
     std::string m_playerAvatarPath;
 
-    OpenGLRenderSystem m_gl;
+    std::unique_ptr<IGraphicsRenderer> m_renderer;
     AnimationSystem m_animationSystem;
     TerrainEnvironmentSystem m_terrainEnv;
     SpatialGridSystem m_spatialGrid;

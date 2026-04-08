@@ -16,7 +16,7 @@
 //
 // Query:
 //   for (Entity e : registry.getEntitiesWith<PlayerTagComponent, TransformComponent>()) { ... }
-// OpenGLRenderSystem uses PlayerTag / EnemyTag to find drawables without hardcoded entity ids.
+// Renderer passes use PlayerTag / EnemyTag to find drawables without hardcoded entity ids.
 // -----------------------------------------------------------------------------
 
 /// Marks the controllable / primary actor. At most one is typical for this demo.

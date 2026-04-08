@@ -29,6 +29,6 @@ struct SocketComponent {
     Entity skeletonRoot = INVALID_ENTITY;
     int followBoneIndex = -1;
 
-    /// When true, `OpenGLRenderSystem` draws a small yellow debug pyramid at this socket.
+    /// When true, the OpenGL backend draws a small yellow debug pyramid at this socket.
     bool debugDrawPyramid = false;
 };

@@ -16,7 +16,7 @@
 #include "../../components/TransformComponent.hpp"
 #include "../../components/Velocity.hpp"
 #include "../../components/WorldTransformComponent.hpp"
-#include "../../rendering/OpenGLRenderSystem.hpp"
+#include "../../graphics/IGraphicsRenderer.hpp"
 #include "../../animation/AnimationSampling.hpp"
 
 #include "../../math/Quat.hpp"
@@ -164,7 +164,7 @@ struct SkinnedCharacterActorFactory {
     }
 
     static bool uploadToGpuAndAttach(
-        OpenGLRenderSystem& gl,
+        IGraphicsRenderer& gl,
         Registry& registry,
         Entity e,
         const std::shared_ptr<ModelAsset>& model,

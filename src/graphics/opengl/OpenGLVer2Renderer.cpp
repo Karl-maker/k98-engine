@@ -1,23 +1,28 @@
-#include "OpenGLRenderSystem.hpp"
+#include "OpenGLVer2Renderer.hpp"
+#include "../IGraphicsRenderer.hpp"
+#include "../RenderPipeline.hpp"
 
-#include "../core/assets/ModelAsset.hpp"
-#include "../ecs/Entity.hpp"
-#include "../ecs/Registry.hpp"
-#include "../math/Mat4.hpp"
-#include "../math/Vertex.hpp"
-#include "../components/BoneInstanceComponent.hpp"
-#include "../components/CameraComponent.hpp"
-#include "../components/GameplayTags.hpp"
-#include "../components/GpuSkinPaletteComponent.hpp"
-#include "../components/SocketComponent.hpp"
-#include "../components/StaticMeshComponent.hpp"
-#include "../components/TransformComponent.hpp"
-#include "../components/HdriEnvironmentComponent.hpp"
-#include "../components/LightingComponent.hpp"
-#include "../components/WorldTransformComponent.hpp"
-#include "../components/TerrainChunkComponent.hpp"
-#include "../components/HeightMapComponent.hpp"
-#include "../math/Vec3.hpp"
+#include "../../core/assets/AssetManager.hpp"
+#include "../../core/assets/IAsset.hpp"
+#include "../../core/assets/ModelAsset.hpp"
+#include "../../components/PbrMaterialPresetComponent.hpp"
+#include "../../ecs/Entity.hpp"
+#include "../../ecs/Registry.hpp"
+#include "../../math/Mat4.hpp"
+#include "../../math/Vertex.hpp"
+#include "../../components/BoneInstanceComponent.hpp"
+#include "../../components/CameraComponent.hpp"
+#include "../../components/GameplayTags.hpp"
+#include "../../components/GpuSkinPaletteComponent.hpp"
+#include "../../components/SocketComponent.hpp"
+#include "../../components/StaticMeshComponent.hpp"
+#include "../../components/TransformComponent.hpp"
+#include "../../components/HdriEnvironmentComponent.hpp"
+#include "../../components/LightingComponent.hpp"
+#include "../../components/WorldTransformComponent.hpp"
+#include "../../components/TerrainChunkComponent.hpp"
+#include "../../components/HeightMapComponent.hpp"
+#include "../../math/Vec3.hpp"
 
 #define GLFW_INCLUDE_NONE
 #include <GLFW/glfw3.h>
@@ -252,6 +257,9 @@ uniform vec4 uLightSpot[MAX_LIGHTS];
 uniform vec4 uLightAttenSpec[MAX_LIGHTS];
 uniform vec2 uRim;
 uniform sampler2D uEnvMap;
+/// Bound to texture unit 5 so it does not clash with albedo–MR (0–3) or HDRI (4).
+uniform sampler2D uDisplacement;
+uniform int uUseDisplacement;
 uniform int uUseHdri;
 uniform float uHdriIntensity;
 uniform float uHdriRotY;
@@ -278,6 +286,10 @@ void main() {
     float rough = 0.5;
     if (uUseMetallicRoughness != 0)
         rough = texture(uMetallicRoughness, vUV).g;
+
+    float dispCavity = 1.0;
+    if (uUseDisplacement != 0)
+        dispCavity = mix(0.88, 1.0, texture(uDisplacement, vUV).r);
 
     vec3 V = normalize(uCameraPos - vWorldPos);
     vec3 diffAccum = vec3(0.0);
@@ -334,7 +346,7 @@ void main() {
         specAccum += lcCol * spec * att * spotF;
     }
 
-    vec3 ambLit = uAmbient * occ;
+    vec3 ambLit = uAmbient * occ * dispCavity;
     vec3 rimCol = vec3(0.0);
     if (uRim.y > 0.001) {
         float rim = pow(1.0 - max(dot(N, V), 0.0), max(uRim.x, 0.5));
@@ -452,8 +464,13 @@ static GLuint loadTexture2DFromFile(const std::string& path, bool srgb) {
     GLuint tex = 0;
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
-    (void)srgb;
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    GLint internal = GL_RGBA8;
+    if (srgb) {
+#if defined(GL_SRGB8_ALPHA8)
+        internal = GL_SRGB8_ALPHA8;
+#endif
+    }
+    glTexImage2D(GL_TEXTURE_2D, 0, internal, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
     glGenerateMipmap(GL_TEXTURE_2D);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -461,6 +478,22 @@ static GLuint loadTexture2DFromFile(const std::string& path, bool srgb) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
     stbi_image_free(data);
     return tex;
+}
+
+/// Ensures fragment shader displacement uniforms are bound (unit 5); static meshes do not sample height yet.
+static void bindDisplacementSlotUnused(GLuint program, GLuint whiteTex)
+{
+    if (!whiteTex)
+        return;
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_2D, whiteTex);
+    const GLint uDisp = glGetUniformLocation(program, "uDisplacement");
+    const GLint uUseDisp = glGetUniformLocation(program, "uUseDisplacement");
+    if (uDisp >= 0)
+        glUniform1i(uDisp, 5);
+    if (uUseDisp >= 0)
+        glUniform1i(uUseDisp, 0);
+    glActiveTexture(GL_TEXTURE0);
 }
 
 static GLuint make1x1WhiteTexture() {
@@ -490,7 +523,7 @@ static GLuint compileShader(GLenum type, const char* src) {
     return s;
 }
 
-bool OpenGLRenderSystem::init(int width, int height, const char* title, const OpenGLInitOptions& options) {
+bool OpenGLVer2Renderer::init(int width, int height, const char* title, const OpenGLInitOptions& options) {
     if (!glfwInit()) {
         std::cerr << "glfwInit failed\n";
         return false;
@@ -563,10 +596,12 @@ bool OpenGLRenderSystem::init(int width, int height, const char* title, const Op
 
     buildDebugHudPipeline();
 
+    m_texWhite1x1 = make1x1WhiteTexture();
+
     return true;
 }
 
-void OpenGLRenderSystem::buildPyramidMesh() {
+void OpenGLVer2Renderer::buildPyramidMesh() {
     struct V {
         float px, py, pz, nx, ny, nz;
     };
@@ -611,7 +646,7 @@ void OpenGLRenderSystem::buildPyramidMesh() {
     glBindVertexArray(0);
 }
 
-void OpenGLRenderSystem::buildTexturedShaderPipeline() {
+void OpenGLVer2Renderer::buildTexturedShaderPipeline() {
     GLuint vs = compileShader(GL_VERTEX_SHADER, kTexVertSrc);
     GLuint fs = compileShader(GL_FRAGMENT_SHADER, kTexFragSrc);
     if (!vs || !fs)
@@ -633,7 +668,7 @@ void OpenGLRenderSystem::buildTexturedShaderPipeline() {
     }
 }
 
-void OpenGLRenderSystem::buildSkinnedTexturedShaderPipeline() {
+void OpenGLVer2Renderer::buildSkinnedTexturedShaderPipeline() {
     GLuint vs = compileShader(GL_VERTEX_SHADER, kSkinTexVertSrc);
     GLuint fs = compileShader(GL_FRAGMENT_SHADER, kTexFragSrc);
     if (!vs || !fs)
@@ -660,7 +695,7 @@ void OpenGLRenderSystem::buildSkinnedTexturedShaderPipeline() {
     }
 }
 
-void OpenGLRenderSystem::buildDebugHudPipeline()
+void OpenGLVer2Renderer::buildDebugHudPipeline()
 {
     GLuint vs = compileShader(GL_VERTEX_SHADER, kHudVertSrc);
     GLuint fs = compileShader(GL_FRAGMENT_SHADER, kHudFragSrc);
@@ -704,12 +739,12 @@ void OpenGLRenderSystem::buildDebugHudPipeline()
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-void OpenGLRenderSystem::setDebugHudSnapshot(OpenGLDebugHudSnapshot snapshot)
+void OpenGLVer2Renderer::setDebugHudSnapshot(OpenGLDebugHudSnapshot snapshot)
 {
     m_debugHud = std::move(snapshot);
 }
 
-void OpenGLRenderSystem::drawDebugHudOverlay()
+void OpenGLVer2Renderer::drawDebugHudOverlay()
 {
     if (!m_debugHud.enabled || !m_debugHudProgram || !m_window)
         return;
@@ -853,7 +888,7 @@ void OpenGLRenderSystem::drawDebugHudOverlay()
         glEnable(GL_SCISSOR_TEST);
 }
 
-void OpenGLRenderSystem::releaseGpuMeshesForKey(const std::string& assetCacheKey) {
+void OpenGLVer2Renderer::releaseGpuMeshesForKey(const std::string& assetCacheKey) {
     auto it = m_gpuMeshByAssetKey.find(assetCacheKey);
     if (it == m_gpuMeshByAssetKey.end())
         return;
@@ -877,7 +912,7 @@ void OpenGLRenderSystem::releaseGpuMeshesForKey(const std::string& assetCacheKey
     m_gpuMeshByAssetKey.erase(it);
 }
 
-void OpenGLRenderSystem::releaseStaticModel() {
+void OpenGLVer2Renderer::releaseStaticModel() {
     std::vector<std::string> keys;
     keys.reserve(m_gpuMeshByAssetKey.size());
     for (const auto& kv : m_gpuMeshByAssetKey)
@@ -886,7 +921,7 @@ void OpenGLRenderSystem::releaseStaticModel() {
         releaseGpuMeshesForKey(k);
 }
 
-bool OpenGLRenderSystem::uploadStaticModel(const ModelAsset& model, const std::string& assetCacheKey) {
+bool OpenGLVer2Renderer::uploadStaticModel(const ModelAsset& model, const std::string& assetCacheKey) {
     if (assetCacheKey.empty() || model.meshes.empty() || !m_window)
         return false;
 
@@ -972,7 +1007,24 @@ bool OpenGLRenderSystem::uploadStaticModel(const ModelAsset& model, const std::s
     return true;
 }
 
-void OpenGLRenderSystem::applyTexturedSceneLighting(unsigned int program, Registry& registry, const Vec3& cameraWorld) {
+bool OpenGLVer2Renderer::uploadStaticModelFromPath(
+    AssetManager& assets,
+    const std::string& path,
+    const std::string& assetCacheKey,
+    bool releaseCpuMeshAfterUpload)
+{
+    std::shared_ptr<IAsset> a = assets.load(path);
+    auto model = std::dynamic_pointer_cast<ModelAsset>(a);
+    if (!model || model->meshes.empty())
+        return false;
+    if (!uploadStaticModel(*model, assetCacheKey))
+        return false;
+    if (releaseCpuMeshAfterUpload)
+        model->releaseMeshGeometry();
+    return true;
+}
+
+void OpenGLVer2Renderer::applyTexturedSceneLighting(unsigned int program, Registry& registry, const Vec3& cameraWorld) {
     Vec3 ambient(0.06f, 0.07f, 0.09f);
     for (Entity he : registry.getEntitiesWith<HdriEnvironmentComponent>()) {
         const auto& h = registry.getComponent<HdriEnvironmentComponent>(he);
@@ -1082,7 +1134,91 @@ void OpenGLRenderSystem::applyTexturedSceneLighting(unsigned int program, Regist
         glUniform4fv(uAt, 8, attenSpec);
 }
 
-void OpenGLRenderSystem::applyHdriUniforms(unsigned int program, Registry& registry) {
+void OpenGLVer2Renderer::uploadPbrMaterialPresets(Registry& registry)
+{
+    for (Entity e : registry.getEntitiesWith<PbrMaterialPresetComponent>()) {
+        auto& surf = registry.getComponent<PbrMaterialPresetComponent>(e);
+        if (surf.gpuUploaded || surf.presetRootRelative.empty())
+            continue;
+
+        std::string root;
+#ifdef GAME_ENGINE_PROJECT_ROOT
+        root = std::string(GAME_ENGINE_PROJECT_ROOT);
+        if (!root.empty() && root.back() != '/')
+            root += '/';
+#endif
+        root += surf.presetRootRelative;
+        if (!root.empty() && root.back() != '/')
+            root += '/';
+
+        auto load = [&](const char* file, bool srgb) -> GLuint { return loadTexture2DFromFile(root + file, srgb); };
+
+        surf.maps.albedo = load("Tiles071_1K-JPG_Color.jpg", true);
+        surf.maps.normalMap = load("Tiles071_1K-JPG_NormalGL.jpg", false);
+        surf.maps.occlusionMap = load("Tiles071_1K-JPG_AmbientOcclusion.jpg", false);
+        surf.maps.roughnessMap = load("Tiles071_1K-JPG_Roughness.jpg", false);
+        surf.maps.displacementMap = load("Tiles071_1K-JPG_Displacement.jpg", false);
+
+        if (surf.maps.albedo != 0)
+            surf.gpuUploaded = true;
+        else
+            std::cerr << "PbrMaterialPreset: could not load albedo from preset: " << root << "\n";
+        break;
+    }
+    releaseTerrainMeshes();
+}
+
+void OpenGLVer2Renderer::bindPbrTextureMaps(unsigned int program, const PbrTextureSetComponent& maps, bool useDisplacementMap)
+{
+    const GLuint white = m_texWhite1x1 ? m_texWhite1x1 : 0;
+
+    GLint uAlb = glGetUniformLocation(program, "uAlbedo");
+    GLint uNorm = glGetUniformLocation(program, "uNormalMap");
+    GLint uOcc = glGetUniformLocation(program, "uOcclusion");
+    GLint uMr = glGetUniformLocation(program, "uMetallicRoughness");
+    GLint uUseN = glGetUniformLocation(program, "uUseNormalMap");
+    GLint uUseOcc = glGetUniformLocation(program, "uUseOcclusion");
+    GLint uUseMr = glGetUniformLocation(program, "uUseMetallicRoughness");
+    GLint uDisp = glGetUniformLocation(program, "uDisplacement");
+    GLint uUseDisp = glGetUniformLocation(program, "uUseDisplacement");
+
+    glActiveTexture(GL_TEXTURE0);
+    glBindTexture(GL_TEXTURE_2D, maps.albedo ? maps.albedo : white);
+    if (uAlb >= 0)
+        glUniform1i(uAlb, 0);
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, maps.normalMap ? maps.normalMap : white);
+    if (uNorm >= 0)
+        glUniform1i(uNorm, 1);
+    if (uUseN >= 0)
+        glUniform1i(uUseN, maps.normalMap ? 1 : 0);
+
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, maps.occlusionMap ? maps.occlusionMap : white);
+    if (uOcc >= 0)
+        glUniform1i(uOcc, 2);
+    if (uUseOcc >= 0)
+        glUniform1i(uUseOcc, maps.occlusionMap ? 1 : 0);
+
+    glActiveTexture(GL_TEXTURE3);
+    glBindTexture(GL_TEXTURE_2D, maps.roughnessMap ? maps.roughnessMap : white);
+    if (uMr >= 0)
+        glUniform1i(uMr, 3);
+    if (uUseMr >= 0)
+        glUniform1i(uUseMr, maps.roughnessMap ? 1 : 0);
+
+    glActiveTexture(GL_TEXTURE5);
+    glBindTexture(GL_TEXTURE_2D, maps.displacementMap ? maps.displacementMap : white);
+    if (uDisp >= 0)
+        glUniform1i(uDisp, 5);
+    if (uUseDisp >= 0)
+        glUniform1i(uUseDisp, (useDisplacementMap && maps.displacementMap) ? 1 : 0);
+
+    glActiveTexture(GL_TEXTURE0);
+}
+
+void OpenGLVer2Renderer::applyHdriUniforms(unsigned int program, Registry& registry) {
     GLint uUse = glGetUniformLocation(program, "uUseHdri");
     if (uUse < 0)
         return;
@@ -1099,7 +1235,7 @@ void OpenGLRenderSystem::applyHdriUniforms(unsigned int program, Registry& regis
             first = e;
     }
     if (enabledCount > 1 && !m_hdriWarnedMultiple) {
-        std::cerr << "OpenGLRenderSystem: multiple enabled HdriEnvironmentComponent entities; using the first only.\n";
+        std::cerr << "OpenGLVer2Renderer: multiple enabled HdriEnvironmentComponent entities; using the first only.\n";
         m_hdriWarnedMultiple = true;
     }
 
@@ -1150,18 +1286,15 @@ void OpenGLRenderSystem::applyHdriUniforms(unsigned int program, Registry& regis
 
 namespace {
 
-/// World-space grid snap for floating origin (larger = fewer origin jumps, more precision risk at cell edges).
-constexpr float kRenderOriginSnapGrid = 256.0f;
-
+/// Floating-origin reference: camera position without coarse grid snapping (256³ grid caused pops/jitter).
 Vec3 snapRenderOrigin(const Vec3& eye)
 {
-    const float g = kRenderOriginSnapGrid;
-    return {std::floor(eye.x / g) * g, std::floor(eye.y / g) * g, std::floor(eye.z / g) * g};
+    return eye;
 }
 
 } // namespace
 
-void OpenGLRenderSystem::getFloatingOriginMatrices(
+void OpenGLVer2Renderer::getFloatingOriginMatrices(
     const Mat4& proj,
     const Mat4& view,
     const Vec3& snappedOrigin,
@@ -1196,7 +1329,7 @@ void OpenGLRenderSystem::getFloatingOriginMatrices(
     m_floatOriginCacheValid = true;
 }
 
-void OpenGLRenderSystem::drawTexturedModel(
+void OpenGLVer2Renderer::drawTexturedModel(
     Registry& registry,
     const Mat4& pvShifted,
     const Mat4& tmO,
@@ -1228,6 +1361,7 @@ void OpenGLRenderSystem::drawTexturedModel(
     glUniform3f(uTint, 1.0f, 1.0f, 1.0f);
     applyTexturedSceneLighting(m_texProgram, registry, cameraWorld);
     applyHdriUniforms(m_texProgram, registry);
+    bindDisplacementSlotUnused(m_texProgram, m_texWhite1x1);
 
     const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
     glDisable(GL_CULL_FACE);
@@ -1268,7 +1402,7 @@ void OpenGLRenderSystem::drawTexturedModel(
     glUseProgram(m_program);
 }
 
-void OpenGLRenderSystem::drawTexturedSkinnedModel(
+void OpenGLVer2Renderer::drawTexturedSkinnedModel(
     Registry& registry,
     const Mat4& pvShifted,
     const Mat4& tmO,
@@ -1312,6 +1446,7 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
     glUniform3f(uTint, 1.0f, 1.0f, 1.0f);
     applyTexturedSceneLighting(m_skinTexProgram, registry, cameraWorld);
     applyHdriUniforms(m_skinTexProgram, registry);
+    bindDisplacementSlotUnused(m_skinTexProgram, m_texWhite1x1);
 
     const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
     glDisable(GL_CULL_FACE);
@@ -1370,6 +1505,7 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
         glUniform3f(uTint, 1.0f, 1.0f, 1.0f);
         applyTexturedSceneLighting(m_texProgram, registry, cameraWorld);
         applyHdriUniforms(m_texProgram, registry);
+        bindDisplacementSlotUnused(m_texProgram, m_texWhite1x1);
         for (const StaticMeshPart& part : it->second) {
             if (part.skinned)
                 continue;
@@ -1405,7 +1541,7 @@ void OpenGLRenderSystem::drawTexturedSkinnedModel(
     glUseProgram(m_program);
 }
 
-void OpenGLRenderSystem::shutdown() {
+void OpenGLVer2Renderer::shutdown() {
     clearRenderPasses();
     releaseTerrainMeshes();
     releaseStaticModel();
@@ -1452,6 +1588,10 @@ void OpenGLRenderSystem::shutdown() {
         m_debugHudProgram = 0;
         m_debugHudLocFbSize = -1;
     }
+    if (m_texWhite1x1) {
+        glDeleteTextures(1, &m_texWhite1x1);
+        m_texWhite1x1 = 0;
+    }
     if (m_window) {
         glfwDestroyWindow(m_window);
         m_window = nullptr;
@@ -1459,7 +1599,7 @@ void OpenGLRenderSystem::shutdown() {
     }
 }
 
-void OpenGLRenderSystem::pollFramebufferSize(int& outW, int& outH) const {
+void OpenGLVer2Renderer::pollFramebufferSize(int& outW, int& outH) const {
     if (m_window)
         glfwGetFramebufferSize(m_window, &outW, &outH);
     else {
@@ -1468,7 +1608,7 @@ void OpenGLRenderSystem::pollFramebufferSize(int& outW, int& outH) const {
     }
 }
 
-bool OpenGLRenderSystem::shouldClose() const {
+bool OpenGLVer2Renderer::shouldClose() const {
     return m_window && glfwWindowShouldClose(m_window);
 }
 
@@ -1487,9 +1627,19 @@ Vec3 terrainVertexNormal(const HeightMapComponent& hm, int x, int z)
     return normalize({-dhx, 1.0f, -dhz});
 }
 
+/// Bitangent sign is +1 for terrain patches (consistent with UV axes ix, iz).
+inline Vec3 terrainTangentFromNormal(const Vec3& N)
+{
+    const Vec3 up{0.0f, 1.0f, 0.0f};
+    Vec3 T = cross(up, N);
+    if (lengthSquared(T) < 1e-8f)
+        return {1.0f, 0.0f, 0.0f};
+    return normalize(T);
+}
+
 } // namespace
 
-void OpenGLRenderSystem::releaseTerrainMeshes()
+void OpenGLVer2Renderer::releaseTerrainMeshes()
 {
     for (auto& kv : m_terrainMeshes) {
         TerrainChunkGpuMesh& g = kv.second;
@@ -1504,7 +1654,7 @@ void OpenGLRenderSystem::releaseTerrainMeshes()
     m_terrainMeshes.clear();
 }
 
-void OpenGLRenderSystem::syncTerrainMeshes(Registry& registry)
+void OpenGLVer2Renderer::syncTerrainMeshes(Registry& registry)
 {
     for (auto it = m_terrainMeshes.begin(); it != m_terrainMeshes.end();) {
         if (!registry.hasComponent<TerrainChunkComponent>(it->first)) {
@@ -1520,6 +1670,18 @@ void OpenGLRenderSystem::syncTerrainMeshes(Registry& registry)
             ++it;
     }
 
+    const PbrMaterialPresetComponent* presetSurf = nullptr;
+    float uvRepeats = 4.0f;
+    for (Entity te : registry.getEntitiesWith<PbrMaterialPresetComponent>()) {
+        const auto& s = registry.getComponent<PbrMaterialPresetComponent>(te);
+        if (s.gpuUploaded && s.maps.albedo != 0) {
+            presetSurf = &s;
+            uvRepeats = s.surfaceUvRepeats;
+            break;
+        }
+    }
+    const bool usePbrTerrain = presetSurf != nullptr && m_texProgram != 0;
+
     for (Entity e : registry.getEntitiesWith<TerrainChunkComponent, HeightMapComponent, WorldTransformComponent>()) {
         if (m_terrainMeshes.count(e) != 0)
             continue;
@@ -1531,17 +1693,42 @@ void OpenGLRenderSystem::syncTerrainMeshes(Registry& registry)
         const int cells = tc.size;
 
         std::vector<float> interleaved;
-        interleaved.reserve(static_cast<size_t>(n * n * 6));
-        for (int iz = 0; iz < n; ++iz) {
-            for (int ix = 0; ix < n; ++ix) {
-                const Vec3 N = terrainVertexNormal(hm, ix, iz);
-                const float y = hm.get(ix, iz);
-                interleaved.push_back(static_cast<float>(ix) * cell);
-                interleaved.push_back(y);
-                interleaved.push_back(static_cast<float>(iz) * cell);
-                interleaved.push_back(N.x);
-                interleaved.push_back(N.y);
-                interleaved.push_back(N.z);
+        if (usePbrTerrain) {
+            interleaved.reserve(static_cast<size_t>(n * n * 12));
+            for (int iz = 0; iz < n; ++iz) {
+                for (int ix = 0; ix < n; ++ix) {
+                    const Vec3 N = terrainVertexNormal(hm, ix, iz);
+                    const Vec3 T = terrainTangentFromNormal(N);
+                    const float y = hm.get(ix, iz);
+                    const float u = (cells > 0) ? static_cast<float>(ix) / static_cast<float>(cells) * uvRepeats : 0.0f;
+                    const float v = (cells > 0) ? static_cast<float>(iz) / static_cast<float>(cells) * uvRepeats : 0.0f;
+                    interleaved.push_back(static_cast<float>(ix) * cell);
+                    interleaved.push_back(y);
+                    interleaved.push_back(static_cast<float>(iz) * cell);
+                    interleaved.push_back(N.x);
+                    interleaved.push_back(N.y);
+                    interleaved.push_back(N.z);
+                    interleaved.push_back(u);
+                    interleaved.push_back(v);
+                    interleaved.push_back(T.x);
+                    interleaved.push_back(T.y);
+                    interleaved.push_back(T.z);
+                    interleaved.push_back(1.0f);
+                }
+            }
+        } else {
+            interleaved.reserve(static_cast<size_t>(n * n * 6));
+            for (int iz = 0; iz < n; ++iz) {
+                for (int ix = 0; ix < n; ++ix) {
+                    const Vec3 N = terrainVertexNormal(hm, ix, iz);
+                    const float y = hm.get(ix, iz);
+                    interleaved.push_back(static_cast<float>(ix) * cell);
+                    interleaved.push_back(y);
+                    interleaved.push_back(static_cast<float>(iz) * cell);
+                    interleaved.push_back(N.x);
+                    interleaved.push_back(N.y);
+                    interleaved.push_back(N.z);
+                }
             }
         }
 
@@ -1572,19 +1759,99 @@ void OpenGLRenderSystem::syncTerrainMeshes(Registry& registry)
         glBufferData(GL_ARRAY_BUFFER, static_cast<GLsizeiptr>(interleaved.size() * sizeof(float)), interleaved.data(), GL_STATIC_DRAW);
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, gpu.ebo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, static_cast<GLsizeiptr>(indices.size() * sizeof(unsigned int)), indices.data(), GL_STATIC_DRAW);
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-        glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
-        glEnableVertexAttribArray(1);
+        if (usePbrTerrain) {
+            const GLsizei stride = static_cast<GLsizei>(12 * sizeof(float));
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(1);
+            glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)(6 * sizeof(float)));
+            glEnableVertexAttribArray(2);
+            glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, (void*)(8 * sizeof(float)));
+            glEnableVertexAttribArray(3);
+            gpu.floatsPerVertex = 12;
+        } else {
+            glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
+            glEnableVertexAttribArray(0);
+            glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
+            glEnableVertexAttribArray(1);
+            gpu.floatsPerVertex = 6;
+        }
         glBindVertexArray(0);
         gpu.indexCount = static_cast<int>(indices.size());
         m_terrainMeshes[e] = gpu;
     }
 }
 
-void OpenGLRenderSystem::drawTerrainMeshes(Registry& registry, const Mat4& pvShifted, const Mat4& tmO)
+void OpenGLVer2Renderer::drawTerrainMeshes(Registry& registry, const Mat4& pvShifted, const Mat4& tmO, const Vec3& cameraWorld)
 {
-    if (m_terrainMeshes.empty() || m_program == 0)
+    if (m_terrainMeshes.empty())
+        return;
+
+    const PbrMaterialPresetComponent* surfMat = nullptr;
+    for (Entity te : registry.getEntitiesWith<PbrMaterialPresetComponent>()) {
+        const auto& s = registry.getComponent<PbrMaterialPresetComponent>(te);
+        if (s.gpuUploaded && s.maps.albedo != 0) {
+            surfMat = &s;
+            break;
+        }
+    }
+
+    bool layoutPbr = false;
+    for (const auto& kv : m_terrainMeshes) {
+        if (kv.second.floatsPerVertex == 12) {
+            layoutPbr = true;
+            break;
+        }
+    }
+
+    if (surfMat && m_texProgram != 0 && layoutPbr) {
+        glUseProgram(m_texProgram);
+        const GLint uM = glGetUniformLocation(m_texProgram, "uModel");
+        const GLint uMvp = glGetUniformLocation(m_texProgram, "uMVP");
+        const GLint uTint = glGetUniformLocation(m_texProgram, "uTint");
+        glUniform3f(uTint, 1.0f, 1.0f, 1.0f);
+        applyTexturedSceneLighting(m_texProgram, registry, cameraWorld);
+        applyHdriUniforms(m_texProgram, registry);
+        bindPbrTextureMaps(m_texProgram, surfMat->maps, true);
+
+        const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
+        glDisable(GL_CULL_FACE);
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+        const GLboolean polyOffWas = glIsEnabled(GL_POLYGON_OFFSET_FILL);
+        glEnable(GL_POLYGON_OFFSET_FILL);
+        glPolygonOffset(1.0f, 1.0f);
+
+        for (const auto& kv : m_terrainMeshes) {
+            Entity e = kv.first;
+            if (!registry.hasComponent<WorldTransformComponent>(e))
+                continue;
+            if (kv.second.floatsPerVertex != 12)
+                continue;
+            const Mat4& model = registry.getComponent<WorldTransformComponent>(e).world;
+            const Mat4 mvp = mat4Mul(pvShifted, mat4Mul(tmO, model));
+            glUniformMatrix4fv(uM, 1, GL_FALSE, model.m);
+            glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m);
+            glBindVertexArray(kv.second.vao);
+            glDrawElements(GL_TRIANGLES, kv.second.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+        glBindVertexArray(0);
+        glActiveTexture(GL_TEXTURE0);
+
+        if (!polyOffWas)
+            glDisable(GL_POLYGON_OFFSET_FILL);
+
+        if (cullWas)
+            glEnable(GL_CULL_FACE);
+        glDisable(GL_BLEND);
+
+        glUseProgram(m_program);
+        return;
+    }
+
+    if (m_program == 0)
         return;
 
     glUseProgram(m_program);
@@ -1606,9 +1873,15 @@ void OpenGLRenderSystem::drawTerrainMeshes(Registry& registry, const Mat4& pvShi
     glEnable(GL_CULL_FACE);
     glCullFace(GL_BACK);
 
+    const GLboolean polyOffWasSolid = glIsEnabled(GL_POLYGON_OFFSET_FILL);
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(1.0f, 1.0f);
+
     for (const auto& kv : m_terrainMeshes) {
         Entity e = kv.first;
         if (!registry.hasComponent<WorldTransformComponent>(e))
+            continue;
+        if (kv.second.floatsPerVertex != 6)
             continue;
         const Mat4& model = registry.getComponent<WorldTransformComponent>(e).world;
         Mat4 mvp = mat4Mul(pvShifted, mat4Mul(tmO, model));
@@ -1634,13 +1907,16 @@ void OpenGLRenderSystem::drawTerrainMeshes(Registry& registry, const Mat4& pvShi
     }
     glBindVertexArray(0);
 
+    if (!polyOffWasSolid)
+        glDisable(GL_POLYGON_OFFSET_FILL);
+
     if (!cullWas)
         glDisable(GL_CULL_FACE);
 
     glUseProgram(m_program);
 }
 
-void OpenGLRenderSystem::drawPyramid(const Mat4& mvp, const Mat4& model, const float color[3]) {
+void OpenGLVer2Renderer::drawPyramid(const Mat4& mvp, const Mat4& model, const float color[3]) {
     GLint uM = glGetUniformLocation(m_program, "uModel");
     GLint uMvp = glGetUniformLocation(m_program, "uMVP");
     GLint uC = glGetUniformLocation(m_program, "uColor");
@@ -1680,7 +1956,7 @@ Vec3 worldTranslationFromRegistry(Registry& registry, Entity e)
 
 class TerrainRenderPass final : public IRenderPass {
 public:
-    explicit TerrainRenderPass(OpenGLRenderSystem* r)
+    explicit TerrainRenderPass(OpenGLVer2Renderer* r)
         : m_r(r)
     {
     }
@@ -1693,12 +1969,12 @@ public:
     }
 
 private:
-    OpenGLRenderSystem* m_r = nullptr;
+    OpenGLVer2Renderer* m_r = nullptr;
 };
 
 class StaticSkinnedMeshRenderPass final : public IRenderPass {
 public:
-    explicit StaticSkinnedMeshRenderPass(OpenGLRenderSystem* r)
+    explicit StaticSkinnedMeshRenderPass(OpenGLVer2Renderer* r)
         : m_r(r)
     {
     }
@@ -1711,12 +1987,12 @@ public:
     }
 
 private:
-    OpenGLRenderSystem* m_r = nullptr;
+    OpenGLVer2Renderer* m_r = nullptr;
 };
 
 class PlayerFallbackRenderPass final : public IRenderPass {
 public:
-    explicit PlayerFallbackRenderPass(OpenGLRenderSystem* r)
+    explicit PlayerFallbackRenderPass(OpenGLVer2Renderer* r)
         : m_r(r)
     {
     }
@@ -1729,12 +2005,12 @@ public:
     }
 
 private:
-    OpenGLRenderSystem* m_r = nullptr;
+    OpenGLVer2Renderer* m_r = nullptr;
 };
 
 } // namespace
 
-void OpenGLRenderSystem::registerRenderPass(std::unique_ptr<IRenderPass> pass)
+void OpenGLVer2Renderer::registerRenderPass(std::unique_ptr<IRenderPass> pass)
 {
     if (!pass)
         return;
@@ -1747,12 +2023,14 @@ void OpenGLRenderSystem::registerRenderPass(std::unique_ptr<IRenderPass> pass)
         });
 }
 
-void OpenGLRenderSystem::clearRenderPasses()
+void OpenGLVer2Renderer::clearRenderPasses()
 {
     m_renderPasses.clear();
 }
 
-void OpenGLRenderSystem::installDefaultRenderPasses()
+// Default pass order (sortKey): terrain (100) → static/skinned meshes (200) → player fallback (300).
+// Replace via clearRenderPasses() + registerRenderPass() for custom pipelines (see RenderPipeline.hpp).
+void OpenGLVer2Renderer::installDefaultRenderPasses()
 {
     clearRenderPasses();
     registerRenderPass(std::make_unique<TerrainRenderPass>(this));
@@ -1760,15 +2038,15 @@ void OpenGLRenderSystem::installDefaultRenderPasses()
     registerRenderPass(std::make_unique<PlayerFallbackRenderPass>(this));
 }
 
-void OpenGLRenderSystem::executeTerrainPass(RenderContext& ctx)
+void OpenGLVer2Renderer::executeTerrainPass(RenderContext& ctx)
 {
     if (!ctx.registry)
         return;
     syncTerrainMeshes(*ctx.registry);
-    drawTerrainMeshes(*ctx.registry, ctx.pvShifted, ctx.tmO);
+    drawTerrainMeshes(*ctx.registry, ctx.pvShifted, ctx.tmO, ctx.cameraWorld);
 }
 
-void OpenGLRenderSystem::executeStaticSkinnedMeshesPass(RenderContext& ctx)
+void OpenGLVer2Renderer::executeStaticSkinnedMeshesPass(RenderContext& ctx)
 {
     if (!ctx.registry)
         return;
@@ -1782,12 +2060,14 @@ void OpenGLRenderSystem::executeStaticSkinnedMeshesPass(RenderContext& ctx)
             continue;
 
         Mat4 base = Mat4::Identity();
-        if (registry.hasComponent<WorldTransformComponent>(e))
-            base = registry.getComponent<WorldTransformComponent>(e).world;
-        else {
-            const auto& t = registry.getComponent<TransformComponent>(e);
+        const auto& t = registry.getComponent<TransformComponent>(e);
+        if (registry.hasComponent<WorldTransformComponent>(e)) {
+            const auto& w = registry.getComponent<WorldTransformComponent>(e).world;
+            const Vec3 wp{w.m[12], w.m[13], w.m[14]};
+            // TransformSystem only stores translation in `world`; apply local rotation/scale for facing.
+            base = Mat4::FromTRS(wp, t.rotation, t.scale);
+        } else
             base = Mat4::FromTRS(t.position, t.rotation, t.scale);
-        }
 
         const Mat4 R = Mat4::FromTR({0.0f, 0.0f, 0.0f}, smc.modelSpaceRotation);
         const Mat4 S = Mat4::FromScale({smc.uniformScale, smc.uniformScale, smc.uniformScale});
@@ -1815,7 +2095,7 @@ void OpenGLRenderSystem::executeStaticSkinnedMeshesPass(RenderContext& ctx)
     }
 }
 
-void OpenGLRenderSystem::executeDebugPlayerFallbackPass(RenderContext& ctx)
+void OpenGLVer2Renderer::executeDebugPlayerFallbackPass(RenderContext& ctx)
 {
     if (!ctx.registry)
         return;
@@ -1849,7 +2129,7 @@ void OpenGLRenderSystem::executeDebugPlayerFallbackPass(RenderContext& ctx)
         drawAt(worldTranslationFromRegistry(registry, playerEntity), 1.15f, colPlayer);
 }
 
-void OpenGLRenderSystem::renderFrame(Registry& registry) {
+void OpenGLVer2Renderer::renderFrame(Registry& registry) {
     if (!m_window || !m_program)
         return;
 
@@ -1908,7 +2188,7 @@ void OpenGLRenderSystem::renderFrame(Registry& registry) {
 
     RenderContext ctx;
     ctx.registry     = &registry;
-    ctx.renderer     = this;
+    ctx.renderer     = static_cast<IGraphicsRenderer*>(this);
     ctx.pvShifted    = pvShifted;
     ctx.tmO          = tmO;
     ctx.cameraWorld  = eye;

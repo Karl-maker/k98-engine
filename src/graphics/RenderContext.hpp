@@ -4,15 +4,16 @@
 #include "../math/Mat4.hpp"
 #include "../math/Vec3.hpp"
 
-class OpenGLRenderSystem;
+class IGraphicsRenderer;
 
 // -----------------------------------------------------------------------------
-// Frame snapshot passed to each IRenderPass (registry + camera matrices).
+// Per-frame snapshot for IRenderPass (registry + camera matrices + renderer abstraction).
+// Dependency inversion: passes depend on IGraphicsRenderer*, not concrete OpenGL types.
 // -----------------------------------------------------------------------------
 
 struct RenderContext {
     Registry* registry = nullptr;
-    OpenGLRenderSystem* renderer = nullptr;
+    IGraphicsRenderer* renderer = nullptr;
     Mat4 pvShifted{};
     Mat4 tmO{};
     Vec3 cameraWorld{};

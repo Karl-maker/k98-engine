@@ -5,8 +5,9 @@
 #include <memory>
 
 // -----------------------------------------------------------------------------
-// Single Responsibility: one pass type (terrain, static meshes, debug, UI…).
-// Register instances on OpenGLRenderSystem; renderFrame invokes them in sortKey order.
+// Single responsibility: one visual layer (terrain, meshes, debug, UI…).
+// Open/closed: add new pass types without modifying existing ones.
+// Register on IGraphicsRenderer::registerRenderPass (see OpenGLVer2Renderer).
 // -----------------------------------------------------------------------------
 
 class IRenderPass {
