@@ -3,6 +3,9 @@
 #include "../core/IGame.hpp"
 #include "../ecs/Entity.hpp"
 
+#include <chrono>
+#include <string>
+
 class Registry;
 class AssetManager;
 class ThreadService;
@@ -30,9 +33,20 @@ public:
 private:
     void registerComponents();
     void updateCamera();
+    void updateRightArmAim();
+    void updateAnimClipCrossFade(float dt);
 
     Settings m_settings;
     bool m_debugHudEnabled = false;
+    std::string m_debugDetailText;
+    float m_fpsSmooth = 0.f;
+    bool m_haveFrameTime = false;
+    std::chrono::steady_clock::time_point m_lastFrameTime{};
+    /// Seconds; drives right-hand rest → point → rest cycle.
+    float m_handAnimTime = 0.f;
+    /// Loops idle (clip 0) ↔ secondary clip (clip 1) with cross-fade.
+    float m_animClipTimer = 0.f;
+    int m_animClipSegment = 0;
     bool m_shouldClose = false;
 
     Registry* m_registry = nullptr;

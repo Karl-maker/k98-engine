@@ -7,11 +7,13 @@
 #include "../graphics/opengl/OpenGLVer2Renderer.hpp"
 #include "../graphics/GraphicsTypes.hpp"
 #include "../game/factories/BusinessManSceneFactory.hpp"
+#include "../game/ModelAssetMapper.hpp"
 
 #include "../components/AnimationComponent.hpp"
 #include "../components/BoneAttachmentComponent.hpp"
 #include "../components/BoneControlComponent.hpp"
 #include "../components/CameraComponent.hpp"
+#include "../components/EntityAttachmentComponent.hpp"
 #include "../components/GpuSkinPaletteComponent.hpp"
 #include "../components/HdriEnvironmentComponent.hpp"
 #include "../components/HeightMapComponent.hpp"
@@ -31,20 +33,44 @@
 #include "../systems/AnimationSystem.hpp"
 #include "../systems/BoneAttachmentSystem.hpp"
 #include "../systems/BoneControlSystem.hpp"
+#include "../systems/EntityAttachmentSystem.hpp"
 #include "../systems/PoseSystem.hpp"
 #include "../systems/WorldTransformSyncSystem.hpp"
 
 #include "../math/Mat4.hpp"
+#include "../math/MathOps.hpp"
 #include "../math/Vec3.hpp"
 
+#include <chrono>
+#include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <memory>
+
+namespace {
+
+/// Piecewise cycle: rest → blend to point → hold point → blend to rest → rest (6s loop).
+float rightHandAimCycleWeight(float cycleTimeSec)
+{
+    constexpr float period = 6.f;
+    const float t = std::fmod(cycleTimeSec, period);
+    if (t < 1.2f)
+        return 0.f;
+    if (t < 2.2f)
+        return t - 1.2f;
+    if (t < 3.8f)
+        return 1.f;
+    if (t < 4.8f)
+        return 4.8f - t;
+    return 0.f;
+}
+
+} // namespace
 
 SuperHero::SuperHero(const Settings& settings)
     : m_settings(settings)
     , m_debugHudEnabled(settings.openglDebugHud)
 {
-    (void)m_debugHudEnabled;
 }
 
 SuperHero::~SuperHero()
@@ -66,6 +92,7 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<AnimationComponent>();
     m_registry->registerComponent<BoneControlComponent>();
     m_registry->registerComponent<BoneAttachmentComponent>();
+    m_registry->registerComponent<EntityAttachmentComponent>();
     m_registry->registerComponent<GpuSkinPaletteComponent>();
     m_registry->registerComponent<RenderableMeshComponent>();
     m_registry->registerComponent<PrimitivePyramidComponent>();
@@ -77,6 +104,126 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<PbrMaterialPresetComponent>();
     m_registry->registerComponent<TerrainChunkComponent>();
     m_registry->registerComponent<HeightMapComponent>();
+}
+
+void SuperHero::updateRightArmAim()
+{
+    m_debugDetailText.clear();
+    if (!m_registry || m_character == INVALID_ENTITY || m_camera == INVALID_ENTITY)
+        return;
+    if (!m_registry->hasComponent<SkeletonComponent>(m_character) || !m_registry->hasComponent<PoseComponent>(m_character) ||
+        !m_registry->hasComponent<BoneControlComponent>(m_character) || !m_registry->hasComponent<TransformComponent>(m_camera))
+        return;
+
+    auto& sk = m_registry->getComponent<SkeletonComponent>(m_character);
+    auto& pose = m_registry->getComponent<PoseComponent>(m_character);
+    auto& ctrl = m_registry->getComponent<BoneControlComponent>(m_character);
+
+    const int iArm = findBoneIndexByNameSubstring(sk, "RightArm");
+    const int iFore = findBoneIndexByNameSubstring(sk, "RightForeArm");
+    if (iArm < 0 || iFore < 0)
+        return;
+    if (static_cast<size_t>(iArm) >= pose.worldMatrix.size() || static_cast<size_t>(iFore) >= pose.worldMatrix.size() ||
+        static_cast<size_t>(iArm) >= pose.localPose.size())
+        return;
+
+    const float aimWeight = rightHandAimCycleWeight(m_handAnimTime);
+    const Quat R_anim = pose.localPose[static_cast<size_t>(iArm)].rotation;
+
+    if (aimWeight < 1e-5f) {
+        ctrl.overrides.erase(static_cast<int>(iArm));
+        if (m_debugHudEnabled) {
+            char buf[256];
+            std::snprintf(
+                buf,
+                sizeof(buf),
+                "Right arm IK\naim weight: %.2f (rest)", static_cast<double>(aimWeight));
+            m_debugDetailText = buf;
+        }
+        return;
+    }
+
+    const int iParent = sk.bones[static_cast<size_t>(iArm)].parentIndex;
+    Mat4 W_parent = Mat4::Identity();
+    if (iParent >= 0 && static_cast<size_t>(iParent) < pose.worldMatrix.size())
+        W_parent = pose.worldMatrix[static_cast<size_t>(iParent)];
+
+    const Mat4& W_arm = pose.worldMatrix[static_cast<size_t>(iArm)];
+    const Mat4& W_fore = pose.worldMatrix[static_cast<size_t>(iFore)];
+
+    Vec3 Aw{W_arm.m[12], W_arm.m[13], W_arm.m[14]};
+    Vec3 Fw{W_fore.m[12], W_fore.m[13], W_fore.m[14]};
+    const Vec3 dCur = normalize(Vec3{Fw.x - Aw.x, Fw.y - Aw.y, Fw.z - Aw.z});
+    if (lengthSquared(dCur) < 1e-12f)
+        return;
+
+    const Vec3 camPos = m_registry->getComponent<TransformComponent>(m_camera).position;
+    Vec3 dWant{camPos.x - Aw.x, camPos.y - Aw.y, camPos.z - Aw.z};
+    if (lengthSquared(dWant) < 1e-12f)
+        return;
+    dWant = normalize(dWant);
+
+    const Quat qDelta = quatRotationBetweenUnit(dCur, dWant);
+    const Quat R_parent = Mat4::RotationToQuat(W_parent);
+    const Quat R_arm_world = quatMul(R_parent, R_anim);
+    const Quat R_new_world = quatMul(qDelta, R_arm_world);
+    const Quat R_point_local = quatMul(quatInverseUnit(R_parent), R_new_world);
+
+    BoneOverrideEntry entry;
+    entry.value = pose.localPose[static_cast<size_t>(iArm)];
+    entry.value.rotation = R_point_local;
+    entry.blendWeight = aimWeight;
+    ctrl.overrides[static_cast<int>(iArm)] = entry;
+
+    if (m_debugHudEnabled) {
+        const float angleDeg =
+            std::acos(std::max(-1.f, std::min(1.f, dot(dCur, dWant)))) * 180.0f / 3.14159265f;
+        char buf[640];
+        std::snprintf(
+            buf,
+            sizeof(buf),
+            "Right arm IK\n"
+            "aim weight: %.2f (0=clip 1=point)\n"
+            "bones: arm %d fore %d par %d\n"
+            "aim: camera\n"
+            "align deg: %.1f\n"
+            "Aw (%.2f, %.2f, %.2f)\n"
+            "cam (%.2f, %.2f, %.2f)",
+            static_cast<double>(aimWeight),
+            iArm,
+            iFore,
+            iParent,
+            static_cast<double>(angleDeg),
+            static_cast<double>(Aw.x),
+            static_cast<double>(Aw.y),
+            static_cast<double>(Aw.z),
+            static_cast<double>(camPos.x),
+            static_cast<double>(camPos.y),
+            static_cast<double>(camPos.z));
+        m_debugDetailText = buf;
+    }
+}
+
+void SuperHero::updateAnimClipCrossFade(float dt)
+{
+    if (!m_registry || m_character == INVALID_ENTITY)
+        return;
+    if (!m_registry->hasComponent<AnimationComponent>(m_character))
+        return;
+    auto& anim = m_registry->getComponent<AnimationComponent>(m_character);
+    if (anim.clips.size() < 2)
+        return;
+
+    constexpr float segmentSec = 6.f;
+    constexpr float crossFadeSec = 0.45f;
+    m_animClipTimer += dt;
+    const float cycle = segmentSec * 2.f;
+    const float t = std::fmod(m_animClipTimer, cycle);
+    const int seg = (t < segmentSec) ? 0 : 1;
+    if (seg != m_animClipSegment) {
+        m_animClipSegment = seg;
+        anim.requestCrossFadeToClip(seg, crossFadeSec);
+    }
 }
 
 void SuperHero::updateCamera()
@@ -131,6 +278,19 @@ void SuperHero::onStart()
         return;
     }
 
+    m_registry->addComponent(m_camera, EntityAttachmentComponent{});
+    {
+        auto& ea = m_registry->getComponent<EntityAttachmentComponent>(m_camera);
+        ea.parent = m_character;
+        ea.localOffset = {0.f, 1.55f, -4.2f};
+        ea.rotateOffsetWithParent = true;
+        ea.inheritParentOrientation = false;
+    }
+
+    EntityAttachmentSystem attachEntSys;
+    attachEntSys.update(*m_registry);
+    WorldTransformSyncSystem worldSnap;
+    worldSnap.update(*m_registry);
     updateCamera();
 }
 
@@ -144,13 +304,20 @@ void SuperHero::onUpdate(double dt)
         return;
 
     const float fdt = static_cast<float>(dt);
+    m_handAnimTime += fdt;
+    updateAnimClipCrossFade(fdt);
+
     AnimationSystem animSys;
     animSys.update(*m_registry, fdt);
+
+    PoseSystem poseSys;
+    poseSys.update(*m_registry);
+
+    updateRightArmAim();
 
     BoneControlSystem boneCtrl;
     boneCtrl.update(*m_registry);
 
-    PoseSystem poseSys;
     poseSys.update(*m_registry);
 
     if (m_character != INVALID_ENTITY)
@@ -158,6 +325,9 @@ void SuperHero::onUpdate(double dt)
 
     BoneAttachmentSystem attachSys;
     attachSys.update(*m_registry);
+
+    EntityAttachmentSystem entityAttachSys;
+    entityAttachSys.update(*m_registry);
 
     WorldTransformSyncSystem worldSys;
     worldSys.update(*m_registry);
@@ -169,6 +339,29 @@ void SuperHero::onRender(double)
 {
     if (m_shouldClose || !m_renderer || !m_registry)
         return;
+
+    using clock = std::chrono::steady_clock;
+    const auto now = clock::now();
+    if (m_haveFrameTime) {
+        const double frameDt = std::chrono::duration<double>(now - m_lastFrameTime).count();
+        if (frameDt > 1e-9) {
+            const float inst = static_cast<float>(1.0 / frameDt);
+            m_fpsSmooth = m_fpsSmooth * 0.92f + inst * 0.08f;
+        }
+    } else {
+        m_haveFrameTime = true;
+    }
+    m_lastFrameTime = now;
+
+    OpenGLDebugHudSnapshot hud;
+    hud.enabled = m_debugHudEnabled;
+    hud.fps = m_fpsSmooth;
+    hud.entityCount = static_cast<int>(m_registry->getAliveEntityCount());
+    hud.targetFpsPreset = m_settings.targetFpsPreset;
+    hud.locomotionState = "SuperHero";
+    if (m_debugHudEnabled)
+        hud.debugDetail = m_debugDetailText;
+    m_renderer->setDebugHudSnapshot(std::move(hud));
 
     m_renderer->renderFrame(*m_registry);
 }

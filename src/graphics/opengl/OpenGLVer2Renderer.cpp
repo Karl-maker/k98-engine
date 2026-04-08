@@ -829,6 +829,55 @@ void OpenGLVer2Renderer::drawDebugHudOverlay()
         pushVertBytes(x3, y3, c3);
     }
 
+    if (!m_debugHud.debugDetail.empty()) {
+        char detailBuf[768];
+        std::snprintf(detailBuf, sizeof(detailBuf), "%s", m_debugHud.debugDetail.c_str());
+        char* dtext = detailBuf;
+        const int dtw = stb_easy_font_width(dtext);
+        const int dth = stb_easy_font_height(dtext);
+        const float dtextX = static_cast<float>(m_fbW) - pad - static_cast<float>(dtw) - 4.0f;
+        const float dtextY = pad + 4.0f;
+        const float dpanelX0 = dtextX - 4.0f;
+        const float dpanelX1 = static_cast<float>(m_fbW) - 2.0f;
+        const float dpanelY0 = 2.0f;
+        const float dpanelY1 = dtextY + static_cast<float>(dth) + pad + 4.0f;
+
+        const int dnumQuads =
+            stb_easy_font_print(dtextX, dtextY, dtext, nullptr, stbBuf, static_cast<int>(sizeof(stbBuf)));
+
+        pushVert(dpanelX0, dpanelY0, pr, pg, pb, pa);
+        pushVert(dpanelX1, dpanelY0, pr, pg, pb, pa);
+        pushVert(dpanelX1, dpanelY1, pr, pg, pb, pa);
+        pushVert(dpanelX0, dpanelY0, pr, pg, pb, pa);
+        pushVert(dpanelX1, dpanelY1, pr, pg, pb, pa);
+        pushVert(dpanelX0, dpanelY1, pr, pg, pb, pa);
+
+        for (int q = 0; q < dnumQuads; ++q) {
+            const unsigned char* base = stbBuf + static_cast<size_t>(q) * 64u;
+            float x0, y0, x1, y1, x2, y2, x3, y3;
+            unsigned char c0[4], c1[4], c2[4], c3[4];
+            std::memcpy(&x0, base + 0, 4);
+            std::memcpy(&y0, base + 4, 4);
+            std::memcpy(c0, base + 12, 4);
+            std::memcpy(&x1, base + 16, 4);
+            std::memcpy(&y1, base + 20, 4);
+            std::memcpy(c1, base + 28, 4);
+            std::memcpy(&x2, base + 32, 4);
+            std::memcpy(&y2, base + 36, 4);
+            std::memcpy(c2, base + 44, 4);
+            std::memcpy(&x3, base + 48, 4);
+            std::memcpy(&y3, base + 52, 4);
+            std::memcpy(c3, base + 60, 4);
+
+            pushVertBytes(x0, y0, c0);
+            pushVertBytes(x1, y1, c1);
+            pushVertBytes(x2, y2, c2);
+            pushVertBytes(x0, y0, c0);
+            pushVertBytes(x2, y2, c2);
+            pushVertBytes(x3, y3, c3);
+        }
+    }
+
     const GLsizei vertCount = static_cast<GLsizei>(tri.size() / 6u);
     if (vertCount <= 0)
         return;

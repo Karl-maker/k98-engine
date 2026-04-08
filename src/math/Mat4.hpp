@@ -48,6 +48,58 @@ struct Mat4 {
         return FromTRS(pos, rot, {1, 1, 1});
     }
 
+    /// Pure rotation (orthogonal 3×3, translation zero).
+    static Mat4 FromQuat(const Quat& q) {
+        Quat n = quatNormalize(q);
+        float x = n.x, y = n.y, z = n.z, w = n.w;
+        float xx = x * x, yy = y * y, zz = z * z;
+        float xy = x * y, xz = x * z, yz = y * z;
+        float wx = w * x, wy = w * y, wz = w * z;
+        Mat4 mat = Identity();
+        mat.m[0]  = 1.0f - 2.0f * (yy + zz);
+        mat.m[1]  = 2.0f * (xy + wz);
+        mat.m[2]  = 2.0f * (xz - wy);
+        mat.m[4]  = 2.0f * (xy - wz);
+        mat.m[5]  = 1.0f - 2.0f * (xx + zz);
+        mat.m[6]  = 2.0f * (yz + wx);
+        mat.m[8]  = 2.0f * (xz + wy);
+        mat.m[9]  = 2.0f * (yz - wx);
+        mat.m[10] = 1.0f - 2.0f * (xx + yy);
+        return mat;
+    }
+
+    /// Upper 3×3 assumed orthonormal (ignores translation / bottom row).
+    static Quat RotationToQuat(const Mat4& m) {
+        const float* r = m.m;
+        float tr = r[0] + r[5] + r[10];
+        if (tr > 0.f) {
+            float s = std::sqrt(tr + 1.0f) * 2.0f;
+            if (s < 1e-8f)
+                return {0.f, 0.f, 0.f, 1.f};
+            return quatNormalize(
+                {(r[9] - r[6]) / s, (r[2] - r[8]) / s, (r[4] - r[1]) / s, 0.25f * s});
+        }
+        if (r[0] > r[5] && r[0] > r[10]) {
+            float s = std::sqrt(1.0f + r[0] - r[5] - r[10]) * 2.0f;
+            if (s < 1e-8f)
+                return {0.f, 0.f, 0.f, 1.f};
+            return quatNormalize(
+                {0.25f * s, (r[4] + r[1]) / s, (r[2] + r[8]) / s, (r[9] - r[6]) / s});
+        }
+        if (r[5] > r[10]) {
+            float s = std::sqrt(1.0f + r[5] - r[0] - r[10]) * 2.0f;
+            if (s < 1e-8f)
+                return {0.f, 0.f, 0.f, 1.f};
+            return quatNormalize(
+                {(r[4] + r[1]) / s, 0.25f * s, (r[6] + r[9]) / s, (r[2] - r[8]) / s});
+        }
+        float s = std::sqrt(1.0f + r[10] - r[0] - r[5]) * 2.0f;
+        if (s < 1e-8f)
+            return {0.f, 0.f, 0.f, 1.f};
+        return quatNormalize(
+            {(r[2] + r[8]) / s, (r[6] + r[9]) / s, 0.25f * s, (r[4] - r[1]) / s});
+    }
+
     static Mat4 FromTranslation(const Vec3& t) {
         Mat4 mat = Identity();
         mat.m[12] = t.x;

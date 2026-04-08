@@ -14,4 +14,6 @@ struct OpenGLDebugHudSnapshot {
     int entityCount = 0;
     std::string locomotionState;
     int targetFpsPreset = 60;
+    /// Multi-line debug text drawn in the top-right when non-empty (requires `enabled`).
+    std::string debugDetail;
 };

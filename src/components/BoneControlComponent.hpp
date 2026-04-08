@@ -1,12 +1,16 @@
 #pragma once
 
 #include <unordered_map>
-#include "../math/Vec3.hpp"
-#include "../math/Quat.hpp"
+#include "PoseComponent.hpp"
 
-struct BoneControlComponent
-{
-    std::unordered_map<int, BoneTransform> overrides;
+struct BoneOverrideEntry {
+    BoneTransform value{};
+    /// 0 = keep animated pose, 1 = full `value` (for replace mode) or full additive delta weight.
+    float blendWeight = 1.f;
+};
+
+struct BoneControlComponent {
+    std::unordered_map<int, BoneOverrideEntry> overrides;
 
     bool additive = false;
 };

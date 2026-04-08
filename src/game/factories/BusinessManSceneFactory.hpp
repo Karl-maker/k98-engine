@@ -24,6 +24,7 @@
 #include "../../graphics/IGraphicsRenderer.hpp"
 #include "../../math/MathOps.hpp"
 #include "../../math/Vec3.hpp"
+#include "BusinessManExtraAnimations.hpp"
 #include <cmath>
 #include <memory>
 #include <string>
@@ -102,7 +103,8 @@ inline BusinessManSceneHandles spawnBusinessManScene(
 
     AnimationComponent anim;
     anim.clips = model->clips;
-    anim.currentClip = model->clips.empty() ? -1 : 0;
+    appendBusinessManSecondaryClip(skel, anim);
+    anim.currentClip = anim.clips.empty() ? -1 : 0;
     anim.currentTime = 0.f;
     anim.looping = true;
     registry.addComponent(out.character, std::move(anim));
@@ -169,7 +171,7 @@ inline BusinessManSceneHandles spawnBusinessManScene(
     registry.addComponent(out.camera, CameraComponent{});
     {
         auto& ctf = registry.getComponent<TransformComponent>(out.camera);
-        ctf.position = {0.f, 1.4f, 3.5f};
+        ctf.position = {0.f, 0.f, 0.f};
         auto& cam = registry.getComponent<CameraComponent>(out.camera);
         cam.active = true;
         cam.enableLookAt = true;
