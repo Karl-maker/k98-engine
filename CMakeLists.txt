@@ -73,6 +73,8 @@ include_directories(${tinygltf_SOURCE_DIR})
 # App
 add_executable(game_engine
   src/main.cpp
+  src/domain/SuperHero.cpp
+  src/graphics/opengl/OpenGLVer2Renderer.cpp
   src/utils/math.cpp
   src/core/ThreadService.cpp
   src/core/GameLoop.cpp

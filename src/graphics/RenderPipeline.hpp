@@ -6,7 +6,7 @@
 // Single responsibility
 //   - IRenderPass: one layer (terrain, static/skinned meshes, debug fallback…).
 //   - IGraphicsRenderer: window, GPU resources, ordered pass list (swap for Vulkan/Metal/etc.).
-//   - Components (PbrMaterialPresetComponent, StaticMeshComponent, …): data only.
+//   - Components (PbrMaterialPresetComponent, RenderableMeshComponent, …): data only.
 //
 // Open / closed
 //   - Add IRenderPass implementations without editing GameLoop; register via

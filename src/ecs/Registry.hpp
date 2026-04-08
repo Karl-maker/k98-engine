@@ -2,9 +2,11 @@
 #include "EntityManager.hpp"
 #include "ComponentManager.hpp"
 #include "System.hpp"
-#include <unordered_map>
+#include <cassert>
+#include <cstdint>
 #include <memory>
 #include <typeindex>
+#include <unordered_map>
 
 // =============================================================================
 // Registry — central ECS facade: entities, component storage, type registration.
@@ -27,8 +29,8 @@
 //
 // Order systems explicitly in your game loop; the Registry does not schedule them.
 //
-// Skinned rendering: register `SkinnedMeshComponent` on mesh entities; it references
-// `skeletonRoot` — vertex joint indices/weights live on `ModelAsset::meshes[meshIndex].vertices`.
+// Skinned rendering: joint indices/weights live on mesh `boneData` / `VertexBoneData`
+// (see `ModelAsset::meshes` and `MeshComponent`).
 // =============================================================================
 
 class Registry
@@ -62,6 +64,7 @@ public:
     template<typename T>
     void addComponent(Entity entity, const T& component)
     {
+        assert(entity < MAX_ENTITIES && "Invalid entity id");
         componentManager.addComponent<T>(entity, component);
     
         auto& signature = entityManager.getSignature(entity);
@@ -73,6 +76,7 @@ public:
     template<typename T>
     void removeComponent(Entity entity)
     {
+        assert(entity < MAX_ENTITIES && "Invalid entity id");
         componentManager.removeComponent<T>(entity);
     
         auto& signature = entityManager.getSignature(entity);
@@ -87,6 +91,7 @@ public:
     template<typename T>
     T& getComponent(Entity entity)
     {
+        assert(entity < MAX_ENTITIES && "Invalid entity id");
         return componentManager.getComponent<T>(entity);
     }
 
@@ -96,6 +101,8 @@ public:
     template<typename T>
     bool hasComponent(Entity entity)
     {
+        if (entity >= MAX_ENTITIES)
+            return false;
         auto signature = entityManager.getSignature(entity);
         return signature.test(componentManager.getComponentType<T>());
     }

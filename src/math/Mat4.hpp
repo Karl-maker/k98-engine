@@ -2,6 +2,7 @@
 
 #include "Vec3.hpp"
 #include "Quat.hpp"
+#include "MathOps.hpp"
 #include <cmath>
 
 struct Mat4 {

@@ -280,45 +280,37 @@ std::shared_ptr<IAsset> GltfModelImporter::import(const std::string& path) {
                 wAcc = wIt->second;
 
             outMesh.vertices.resize(vcount);
+            outMesh.boneData.resize(vcount);
             for (size_t vi = 0; vi < vcount; ++vi) {
                 float p[3];
                 if (!readVec3(model, posAcc, vi, p))
                     continue;
                 Vertex& v = outMesh.vertices[vi];
-                v.x = p[0];
-                v.y = p[1];
-                v.z = p[2];
+                v.position = {p[0], p[1], p[2]};
                 float n[3] = {0, 0, 1};
                 if (nAcc >= 0)
                     readVec3(model, nAcc, vi, n);
-                v.nx = n[0];
-                v.ny = n[1];
-                v.nz = n[2];
+                v.normal = {n[0], n[1], n[2]};
 
-                v.u = 0.0f;
-                v.v = 0.0f;
+                v.uv = {0.f, 0.f};
                 if (uvAcc >= 0) {
                     float uv[2] = {0, 0};
                     if (readVec2(model, uvAcc, vi, uv)) {
-                        v.u = uv[0];
-                        v.v = uv[1];
+                        v.uv = {uv[0], uv[1]};
                     }
                 }
 
-                v.tx = 1.0f;
-                v.ty = 0.0f;
-                v.tz = 0.0f;
-                v.tw = 1.0f;
+                v.tangent = {1.f, 0.f, 0.f};
+                v.tangentW = 1.f;
                 if (tanAcc >= 0) {
                     float t[4] = {1, 0, 0, 1};
                     if (readVec4(model, tanAcc, vi, t)) {
-                        v.tx = t[0];
-                        v.ty = t[1];
-                        v.tz = t[2];
-                        v.tw = t[3];
+                        v.tangent = {t[0], t[1], t[2]};
+                        v.tangentW = t[3];
                     }
                 }
 
+                VertexBoneData& sk = outMesh.boneData[vi];
                 if (jAcc >= 0 && wAcc >= 0 && !modelAsset->skeleton.bones.empty()) {
                     int ji[4];
                     readJointIndices4(model, jAcc, vi, ji);
@@ -328,9 +320,9 @@ std::shared_ptr<IAsset> GltfModelImporter::import(const std::string& path) {
                         int boneIdx = ji[k];
                         if (boneIdx >= 0 && boneIdx < static_cast<int>(modelAsset->skeleton.bones.size()) &&
                             wgt[k] > 0.0f)
-                            v.addBoneInfluence(boneIdx, wgt[k]);
+                            sk.addBoneInfluence(boneIdx, wgt[k]);
                     }
-                    v.normalizeWeights();
+                    sk.normalizeWeights();
                 }
             }
 

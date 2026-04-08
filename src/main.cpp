@@ -1,7 +1,7 @@
 #include "core/SystemClock.hpp"
 #include "core/GameLoop.hpp"
 #include "core/GameLoopPreset.hpp"
-#include "domain/SuperHero.cpp"
+#include "domain/SuperHero.hpp"
 
 #include <iostream>
 #include <string>
@@ -27,7 +27,7 @@ int main(int argc, char** argv)
     bool debugHud = true;
     parseArgs(argc, argv, preset, debugHud);
 
-    SuperHeroSettings gameSettings;
+    SuperHero::Settings gameSettings;
     gameSettings.openglDebugHud = debugHud;
     gameSettings.glSwapInterval = 1;
     gameSettings.targetFpsPreset =
@@ -38,7 +38,7 @@ int main(int argc, char** argv)
 
     GameLoopConfig config = makeGameLoopConfig(preset);
 
-    std::cout << "Movement Tutorial — presets: --60 | --120   debug: --debug   toggle HUD: L in-game\n";
+    std::cout << "SuperHero — presets: --60 | --120   debug: --debug\n";
 
     GameLoop loop(game, clock, config);
     loop.run();

@@ -3,6 +3,7 @@
 #include "IAsset.hpp"
 #include "AnimationClipData.hpp"
 #include "../../math/Vertex.hpp"
+#include "../../math/VertexBoneData.hpp"
 #include "../../math/Mat4.hpp"
 #include "../../math/Quat.hpp"
 #include <vector>
@@ -19,6 +20,8 @@ struct Material {
 
 struct Mesh {
     std::vector<Vertex> vertices;
+    /// Parallel to `vertices` (same length after load); joint indices + weights for GPU skinning.
+    std::vector<VertexBoneData> boneData;
     std::vector<int> indices;
     int materialIndex = 0;
 };
@@ -53,6 +56,8 @@ public:
         for (Mesh& m : meshes) {
             m.vertices.clear();
             m.vertices.shrink_to_fit();
+            m.boneData.clear();
+            m.boneData.shrink_to_fit();
             m.indices.clear();
             m.indices.shrink_to_fit();
         }

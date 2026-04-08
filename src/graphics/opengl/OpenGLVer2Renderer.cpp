@@ -9,13 +9,12 @@
 #include "../../ecs/Entity.hpp"
 #include "../../ecs/Registry.hpp"
 #include "../../math/Mat4.hpp"
-#include "../../math/Vertex.hpp"
-#include "../../components/BoneInstanceComponent.hpp"
+#include "../../math/MeshVertexStream.hpp"
 #include "../../components/CameraComponent.hpp"
-#include "../../components/GameplayTags.hpp"
 #include "../../components/GpuSkinPaletteComponent.hpp"
-#include "../../components/SocketComponent.hpp"
-#include "../../components/StaticMeshComponent.hpp"
+#include "../../components/RenderableMeshComponent.hpp"
+#include "../../components/PrimitivePyramidComponent.hpp"
+#include "../../components/PlayerTagComponent.hpp"
 #include "../../components/TransformComponent.hpp"
 #include "../../components/HdriEnvironmentComponent.hpp"
 #include "../../components/LightingComponent.hpp"
@@ -545,6 +544,7 @@ bool OpenGLVer2Renderer::init(int width, int height, const char* title, const Op
 
     glfwMakeContextCurrent(m_window);
     glfwSwapInterval(options.swapInterval);
+    glfwShowWindow(m_window);
 
 #if !defined(__APPLE__)
     glewExperimental = GL_TRUE;
@@ -930,7 +930,7 @@ bool OpenGLVer2Renderer::uploadStaticModel(const ModelAsset& model, const std::s
     std::vector<StaticMeshPart> parts;
     parts.reserve(model.meshes.size());
 
-    const GLsizei stride = static_cast<GLsizei>(sizeof(Vertex));
+    const GLsizei stride = static_cast<GLsizei>(sizeof(MeshVertexStream));
 
     for (const Mesh& mesh : model.meshes) {
         if (mesh.vertices.empty() || mesh.indices.empty())
@@ -966,33 +966,47 @@ bool OpenGLVer2Renderer::uploadStaticModel(const ModelAsset& model, const std::s
         glGenBuffers(1, &part.ebo);
         glBindVertexArray(part.vao);
         glBindBuffer(GL_ARRAY_BUFFER, part.vbo);
-        glBufferData(GL_ARRAY_BUFFER, mesh.vertices.size() * sizeof(Vertex), mesh.vertices.data(), GL_STATIC_DRAW);
+
+        std::vector<MeshVertexStream> interleaved(mesh.vertices.size());
+        for (size_t i = 0; i < mesh.vertices.size(); ++i) {
+            interleaved[i].vertex = mesh.vertices[i];
+            interleaved[i].bone =
+                (i < mesh.boneData.size()) ? mesh.boneData[i] : VertexBoneData{};
+        }
+        glBufferData(
+            GL_ARRAY_BUFFER,
+            static_cast<GLsizeiptr>(interleaved.size() * sizeof(MeshVertexStream)),
+            interleaved.data(),
+            GL_STATIC_DRAW);
 
         glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, part.ebo);
         glBufferData(GL_ELEMENT_ARRAY_BUFFER, mesh.indices.size() * sizeof(int), mesh.indices.data(), GL_STATIC_DRAW);
 
         bool anySkin = false;
-        for (const Vertex& vv : mesh.vertices) {
-            const float ws =
-                vv.boneWeight[0] + vv.boneWeight[1] + vv.boneWeight[2] + vv.boneWeight[3];
-            if (ws > 1e-6f) {
-                anySkin = true;
-                break;
+        if (!mesh.boneData.empty()) {
+            for (const VertexBoneData& sk : mesh.boneData) {
+                const float ws =
+                    sk.weights[0] + sk.weights[1] + sk.weights[2] + sk.weights[3];
+                if (ws > 1e-6f) {
+                    anySkin = true;
+                    break;
+                }
             }
         }
         part.skinned = anySkin;
 
-        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
+        using MS = MeshVertexStream;
+        glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(MS, vertex.position));
         glEnableVertexAttribArray(0);
-        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)(sizeof(float) * 3));
+        glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(MS, vertex.normal));
         glEnableVertexAttribArray(1);
-        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)(sizeof(float) * 6));
+        glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(MS, vertex.uv));
         glEnableVertexAttribArray(2);
-        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, (void*)(sizeof(float) * 8));
+        glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(MS, vertex.tangent));
         glEnableVertexAttribArray(3);
-        glVertexAttribIPointer(4, 4, GL_INT, stride, (void*)offsetof(Vertex, boneIndex));
+        glVertexAttribIPointer(4, 4, GL_INT, stride, (void*)offsetof(MS, bone.boneIndices));
         glEnableVertexAttribArray(4);
-        glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(Vertex, boneWeight));
+        glVertexAttribPointer(5, 4, GL_FLOAT, GL_FALSE, stride, (void*)offsetof(MS, bone.weights));
         glEnableVertexAttribArray(5);
 
         glBindVertexArray(0);
@@ -1025,7 +1039,7 @@ bool OpenGLVer2Renderer::uploadStaticModelFromPath(
 }
 
 void OpenGLVer2Renderer::applyTexturedSceneLighting(unsigned int program, Registry& registry, const Vec3& cameraWorld) {
-    Vec3 ambient(0.06f, 0.07f, 0.09f);
+    Vec3 ambient{0.06f, 0.07f, 0.09f};
     for (Entity he : registry.getEntitiesWith<HdriEnvironmentComponent>()) {
         const auto& h = registry.getComponent<HdriEnvironmentComponent>(he);
         if (h.enabled && !h.hdriAssetPath.empty()) {
@@ -2052,8 +2066,8 @@ void OpenGLVer2Renderer::executeStaticSkinnedMeshesPass(RenderContext& ctx)
         return;
     Registry& registry = *ctx.registry;
 
-    for (Entity e : registry.getEntitiesWith<StaticMeshComponent, TransformComponent>()) {
-        auto& smc = registry.getComponent<StaticMeshComponent>(e);
+    for (Entity e : registry.getEntitiesWith<RenderableMeshComponent, TransformComponent>()) {
+        auto& smc = registry.getComponent<RenderableMeshComponent>(e);
         if (!smc.gpuRegistered || smc.assetCacheKey.empty())
             continue;
         if (m_gpuMeshByAssetKey.find(smc.assetCacheKey) == m_gpuMeshByAssetKey.end())
@@ -2093,6 +2107,16 @@ void OpenGLVer2Renderer::executeStaticSkinnedMeshesPass(RenderContext& ctx)
                 registry, ctx.pvShifted, ctx.tmO, combined, smc.assetCacheKey, ctx.cameraWorld);
         }
     }
+
+    glUseProgram(m_program);
+    for (Entity e : registry.getEntitiesWith<PrimitivePyramidComponent, TransformComponent>()) {
+        const auto& p = registry.getComponent<PrimitivePyramidComponent>(e);
+        const auto& t = registry.getComponent<TransformComponent>(e);
+        const Mat4 model = Mat4::FromTRS(t.position, t.rotation, {p.scale, p.scale, p.scale});
+        const Mat4 mvp = mat4Mul(ctx.pvShifted, mat4Mul(ctx.tmO, model));
+        drawPyramid(mvp, model, p.color);
+    }
+    glUseProgram(m_texProgram);
 }
 
 void OpenGLVer2Renderer::executeDebugPlayerFallbackPass(RenderContext& ctx)
@@ -2118,8 +2142,8 @@ void OpenGLVer2Renderer::executeDebugPlayerFallbackPass(RenderContext& ctx)
     const float colPlayer[3] = {0.2f, 0.75f, 0.35f};
 
     bool playerHasRenderableMesh = false;
-    if (playerEntity != INVALID_ENTITY && registry.hasComponent<StaticMeshComponent>(playerEntity)) {
-        const auto& sm = registry.getComponent<StaticMeshComponent>(playerEntity);
+    if (playerEntity != INVALID_ENTITY && registry.hasComponent<RenderableMeshComponent>(playerEntity)) {
+        const auto& sm = registry.getComponent<RenderableMeshComponent>(playerEntity);
         playerHasRenderableMesh =
             sm.gpuRegistered && !sm.assetCacheKey.empty() &&
             m_gpuMeshByAssetKey.find(sm.assetCacheKey) != m_gpuMeshByAssetKey.end();
@@ -2133,9 +2157,15 @@ void OpenGLVer2Renderer::renderFrame(Registry& registry) {
     if (!m_window || !m_program)
         return;
 
+    glfwPollEvents();
+
     glfwGetFramebufferSize(m_window, &m_fbW, &m_fbH);
-    if (m_fbW <= 0 || m_fbH <= 0)
-        return;
+    if (m_fbW <= 0 || m_fbH <= 0) {
+        int ww = 0, wh = 0;
+        glfwGetWindowSize(m_window, &ww, &wh);
+        m_fbW = std::max(1, ww);
+        m_fbH = std::max(1, wh);
+    }
 
     glViewport(0, 0, m_fbW, m_fbH);
     glClearColor(0.12f, 0.12f, 0.16f, 1.0f);
@@ -2153,8 +2183,11 @@ void OpenGLVer2Renderer::renderFrame(Registry& registry) {
             }
         }
     }
-    if (cameraEntity == INVALID_ENTITY)
+    if (cameraEntity == INVALID_ENTITY) {
+        drawDebugHudOverlay();
+        glfwSwapBuffers(m_window);
         return;
+    }
 
     auto& cam = registry.getComponent<CameraComponent>(cameraEntity);
 
