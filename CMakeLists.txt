@@ -83,8 +83,6 @@ add_executable(game_engine
   src/audio/AudioEngine.cpp
   src/audio/AudioTypes.cpp
   src/audio/AudioClipCache.cpp
-  src/systems/AudioSystem.cpp
-  src/graphics/opengl/OpenGLVer2Renderer.cpp
 )
 
 target_include_directories(game_engine PRIVATE

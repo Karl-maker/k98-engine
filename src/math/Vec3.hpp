@@ -2,57 +2,8 @@
 #include <cmath>
 
 struct Vec3 {
-    float x{0}, y{0}, z{0};
-
-    Vec3() = default;
-    Vec3(float x, float y, float z) : x(x), y(y), z(z) {}
-
-    Vec3 operator+(const Vec3& other) const {
-        return {x + other.x, y + other.y, z + other.z};
-    }
-
-    Vec3 operator-(const Vec3& other) const {
-        return {x - other.x, y - other.y, z - other.z};
-    }
+    float x{0};
+    float y{0};
+    float z{0};
 };
 
-inline float dot(const Vec3& a, const Vec3& b) {
-    return a.x * b.x + a.y * b.y + a.z * b.z;
-}
-
-inline float lengthSquared(const Vec3& v) {
-    return dot(v, v);
-}
-
-inline Vec3 operator*(const Vec3& v, float s) {
-    return {v.x * s, v.y * s, v.z * s};
-}
-
-inline Vec3 operator*(float s, const Vec3& v) {
-    return v * s;
-}
-
-inline Vec3 lerp(const Vec3& a, const Vec3& b, float t) {
-    return a * (1.0f - t) + b * t;
-}
-
-inline Vec3 normalize(const Vec3& v)
-{
-    float lenSq = lengthSquared(v);
-
-    // avoid division by zero (or very small values)
-    if (lenSq < 1e-8f)
-        return Vec3{0.0f, 0.0f, 0.0f};
-
-    float invLen = 1.0f / std::sqrt(lenSq);
-
-    return v * invLen;
-}
-
-inline Vec3 cross(const Vec3& a, const Vec3& b)
-{
-    return {
-        a.y * b.z - a.z * b.y,
-        a.z * b.x - a.x * b.z,
-        a.x * b.y - a.y * b.x};
-}

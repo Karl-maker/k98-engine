@@ -1,8 +1,7 @@
 #include "core/SystemClock.hpp"
 #include "core/GameLoop.hpp"
 #include "core/GameLoopPreset.hpp"
-#include "game/MovementTutorialSettings.hpp"
-#include "game/MovementTutorial.cpp"
+#include "domain/SuperHero.cpp"
 
 #include <iostream>
 #include <string>
@@ -28,13 +27,13 @@ int main(int argc, char** argv)
     bool debugHud = true;
     parseArgs(argc, argv, preset, debugHud);
 
-    MovementTutorialSettings gameSettings;
+    SuperHeroSettings gameSettings;
     gameSettings.openglDebugHud = debugHud;
     gameSettings.glSwapInterval = 1;
     gameSettings.targetFpsPreset =
         (preset == GameLoopPreset::Fps120) ? 120 : 60;
 
-    MovementTutorial game(gameSettings);
+    SuperHero game(gameSettings);
     SystemClock clock;
 
     GameLoopConfig config = makeGameLoopConfig(preset);
