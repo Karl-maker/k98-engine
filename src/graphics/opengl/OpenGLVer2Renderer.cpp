@@ -13,6 +13,7 @@
 #include "../../components/CameraComponent.hpp"
 #include "../../components/GpuSkinPaletteComponent.hpp"
 #include "../../components/RenderableMeshComponent.hpp"
+#include "../../components/PrimitiveBoxComponent.hpp"
 #include "../../components/PrimitivePyramidComponent.hpp"
 #include "../../components/PlayerTagComponent.hpp"
 #include "../../components/TransformComponent.hpp"
@@ -21,6 +22,7 @@
 #include "../../components/WorldTransformComponent.hpp"
 #include "../../components/TerrainChunkComponent.hpp"
 #include "../../components/HeightMapComponent.hpp"
+#include "../../math/MathOps.hpp"
 #include "../../math/Vec3.hpp"
 
 #define GLFW_INCLUDE_NONE
@@ -583,6 +585,7 @@ bool OpenGLVer2Renderer::init(int width, int height, const char* title, const Op
     }
 
     buildPyramidMesh();
+    buildBoxMesh();
     buildTexturedShaderPipeline();
     buildSkinnedTexturedShaderPipeline();
 
@@ -638,6 +641,49 @@ void OpenGLVer2Renderer::buildPyramidMesh() {
     glGenBuffers(1, &m_vbo);
     glBindVertexArray(m_vao);
     glBindBuffer(GL_ARRAY_BUFFER, m_vbo);
+    glBufferData(GL_ARRAY_BUFFER, v.size() * sizeof(V), v.data(), GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(V), (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(V), (void*)(3 * sizeof(float)));
+    glEnableVertexAttribArray(1);
+    glBindVertexArray(0);
+}
+
+void OpenGLVer2Renderer::buildBoxMesh()
+{
+    struct V {
+        float px, py, pz, nx, ny, nz;
+    };
+    std::vector<V> v;
+    const float h = 0.5f;
+    auto addTri = [&](const Vec3& a, const Vec3& b, const Vec3& c) {
+        Vec3 e1{b.x - a.x, b.y - a.y, b.z - a.z};
+        Vec3 e2{c.x - a.x, c.y - a.y, c.z - a.z};
+        Vec3 n = normalize(cross(e1, e2));
+        v.push_back({a.x, a.y, a.z, n.x, n.y, n.z});
+        v.push_back({b.x, b.y, b.z, n.x, n.y, n.z});
+        v.push_back({c.x, c.y, c.z, n.x, n.y, n.z});
+    };
+
+    // Unit cube [-0.5,0.5]^3, CCW faces out.
+    addTri({h, -h, -h}, {h, h, -h}, {h, h, h});
+    addTri({h, -h, -h}, {h, h, h}, {h, -h, h});
+    addTri({-h, -h, h}, {-h, h, h}, {-h, h, -h});
+    addTri({-h, -h, h}, {-h, h, -h}, {-h, -h, -h});
+    addTri({-h, h, -h}, {h, h, -h}, {h, h, h});
+    addTri({-h, h, -h}, {h, h, h}, {-h, h, h});
+    addTri({-h, -h, h}, {h, -h, h}, {h, -h, -h});
+    addTri({-h, -h, h}, {h, -h, -h}, {-h, -h, -h});
+    addTri({-h, -h, h}, {h, -h, h}, {h, h, h});
+    addTri({-h, -h, h}, {h, h, h}, {-h, h, h});
+    addTri({-h, -h, -h}, {-h, h, -h}, {h, h, -h});
+    addTri({-h, -h, -h}, {h, h, -h}, {h, -h, -h});
+
+    m_boxVertexCount = static_cast<unsigned int>(v.size());
+    glGenVertexArrays(1, &m_boxVao);
+    glGenBuffers(1, &m_boxVbo);
+    glBindVertexArray(m_boxVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_boxVbo);
     glBufferData(GL_ARRAY_BUFFER, v.size() * sizeof(V), v.data(), GL_STATIC_DRAW);
     glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(V), (void*)0);
     glEnableVertexAttribArray(0);
@@ -1626,6 +1672,15 @@ void OpenGLVer2Renderer::shutdown() {
         glDeleteProgram(m_texProgram);
         m_texProgram = 0;
     }
+    if (m_boxVbo) {
+        glDeleteBuffers(1, &m_boxVbo);
+        m_boxVbo = 0;
+    }
+    if (m_boxVao) {
+        glDeleteVertexArrays(1, &m_boxVao);
+        m_boxVao = 0;
+    }
+    m_boxVertexCount = 0;
     if (m_vbo) {
         glDeleteBuffers(1, &m_vbo);
         m_vbo = 0;
@@ -2004,6 +2059,32 @@ void OpenGLVer2Renderer::drawPyramid(const Mat4& mvp, const Mat4& model, const f
     glBindVertexArray(0);
 }
 
+void OpenGLVer2Renderer::drawBox(const Mat4& mvp, const Mat4& model, const float color[3])
+{
+    GLint uM = glGetUniformLocation(m_program, "uModel");
+    GLint uMvp = glGetUniformLocation(m_program, "uMVP");
+    GLint uC = glGetUniformLocation(m_program, "uColor");
+    GLint uL = glGetUniformLocation(m_program, "uLightDir");
+    GLint uA = glGetUniformLocation(m_program, "uAmbient");
+    glUniformMatrix4fv(uM, 1, GL_FALSE, model.m);
+    glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m);
+    glUniform3fv(uC, 1, color);
+    float lightDir[3] = {0.35f, 0.85f, 0.35f};
+    float len = std::sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
+    if (len > 1e-5f) {
+        lightDir[0] /= len;
+        lightDir[1] /= len;
+        lightDir[2] /= len;
+    }
+    glUniform3fv(uL, 1, lightDir);
+    float amb[3] = {0.22f, 0.22f, 0.25f};
+    glUniform3fv(uA, 1, amb);
+
+    glBindVertexArray(m_boxVao);
+    glDrawArrays(GL_TRIANGLES, 0, static_cast<GLsizei>(m_boxVertexCount));
+    glBindVertexArray(0);
+}
+
 namespace {
 
 Vec3 worldTranslationFromRegistry(Registry& registry, Entity e)
@@ -2164,6 +2245,16 @@ void OpenGLVer2Renderer::executeStaticSkinnedMeshesPass(RenderContext& ctx)
         const Mat4 model = Mat4::FromTRS(t.position, t.rotation, {p.scale, p.scale, p.scale});
         const Mat4 mvp = mat4Mul(ctx.pvShifted, mat4Mul(ctx.tmO, model));
         drawPyramid(mvp, model, p.color);
+    }
+    for (Entity e : registry.getEntitiesWith<PrimitiveBoxComponent, TransformComponent>()) {
+        const auto& box = registry.getComponent<PrimitiveBoxComponent>(e);
+        const auto& t = registry.getComponent<TransformComponent>(e);
+        const Mat4 model = Mat4::FromTRS(
+            t.position,
+            t.rotation,
+            {box.halfExtents.x * 2.f, box.halfExtents.y * 2.f, box.halfExtents.z * 2.f});
+        const Mat4 mvp = mat4Mul(ctx.pvShifted, mat4Mul(ctx.tmO, model));
+        drawBox(mvp, model, box.color);
     }
     glUseProgram(m_texProgram);
 }

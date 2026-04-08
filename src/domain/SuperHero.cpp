@@ -21,8 +21,13 @@
 #include "../components/MaterialComponent.hpp"
 #include "../components/PbrMaterialPresetComponent.hpp"
 #include "../components/MeshComponent.hpp"
+#include "../components/BoxColliderComponent.hpp"
+#include "../components/CapsuleColliderComponent.hpp"
 #include "../components/PlayerTagComponent.hpp"
+#include "../components/RigidBodyComponent.hpp"
+#include "../components/SphereColliderComponent.hpp"
 #include "../components/PoseComponent.hpp"
+#include "../components/PrimitiveBoxComponent.hpp"
 #include "../components/PrimitivePyramidComponent.hpp"
 #include "../components/RenderableMeshComponent.hpp"
 #include "../components/TerrainChunkComponent.hpp"
@@ -95,6 +100,7 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<EntityAttachmentComponent>();
     m_registry->registerComponent<GpuSkinPaletteComponent>();
     m_registry->registerComponent<RenderableMeshComponent>();
+    m_registry->registerComponent<PrimitiveBoxComponent>();
     m_registry->registerComponent<PrimitivePyramidComponent>();
     m_registry->registerComponent<PlayerTagComponent>();
     m_registry->registerComponent<HdriEnvironmentComponent>();
@@ -104,6 +110,10 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<PbrMaterialPresetComponent>();
     m_registry->registerComponent<TerrainChunkComponent>();
     m_registry->registerComponent<HeightMapComponent>();
+    m_registry->registerComponent<RigidBodyComponent>();
+    m_registry->registerComponent<BoxColliderComponent>();
+    m_registry->registerComponent<CapsuleColliderComponent>();
+    m_registry->registerComponent<SphereColliderComponent>();
 }
 
 void SuperHero::updateRightArmAim()
@@ -287,6 +297,117 @@ void SuperHero::onStart()
         ea.inheritParentOrientation = false;
     }
 
+    m_physicsSys.useProceduralTerrainGround = false;
+    m_physicsSys.grid.cellSize = 8.f;
+
+    {
+        RigidBodyComponent playerBody{};
+        playerBody.mass = 1.f;
+        playerBody.invMass = 1.f;
+        playerBody.linearDamping = 2.8f;
+        m_registry->addComponent(m_character, playerBody);
+
+        CapsuleColliderComponent playerCap{};
+        playerCap.radius = 0.35f;
+        playerCap.halfHeight = 0.53f;
+        playerCap.offset = {0.f, 0.88f, 0.f};
+        m_registry->addComponent(m_character, playerCap);
+
+        auto& ctf = m_registry->getComponent<TransformComponent>(m_character);
+        ctf.position.y = 2.0f;
+    }
+
+    m_ground = m_registry->createEntity();
+    m_registry->addComponent(m_ground, TransformComponent{});
+    m_registry->addComponent(m_ground, WorldTransformComponent{});
+    {
+        auto& gtf = m_registry->getComponent<TransformComponent>(m_ground);
+        gtf.position = {0.f, -8.0f, 0.f};
+
+        RigidBodyComponent groundBody{};
+        groundBody.mass = 0.f;
+        groundBody.invMass = 0.f;
+        m_registry->addComponent(m_ground, groundBody);
+
+        BoxColliderComponent groundBox{};
+        groundBox.halfExtents = {6.f, 0.125f, 6.f};
+        groundBox.offset = {0.f, 0.f, 0.f};
+        m_registry->addComponent(m_ground, groundBox);
+
+        PrimitiveBoxComponent groundVis{};
+        groundVis.halfExtents = groundBox.halfExtents;
+        groundVis.color[0] = 0.3f;
+        groundVis.color[1] = 0.34f;
+        groundVis.color[2] = 0.4f;
+        m_registry->addComponent(m_ground, groundVis);
+    }
+
+    // Dynamic box directly above the character (falls and sits on the capsule).
+    // Capsule top ≈ entityY + offset.y + halfHeight + radius = 2 + 0.88 + 0.53 + 0.35 = 3.76
+    m_headBox = m_registry->createEntity();
+    m_registry->addComponent(m_headBox, TransformComponent{});
+    m_registry->addComponent(m_headBox, WorldTransformComponent{});
+    {
+        constexpr float boxHalfY = 0.18f;
+        constexpr float gapAboveHead = 0.08f;
+        constexpr float playerY = 2.f;
+        constexpr float capTop = playerY + 0.88f + 0.53f + 0.35f;
+        const float centerY = capTop + gapAboveHead + boxHalfY;
+
+        auto& htf = m_registry->getComponent<TransformComponent>(m_headBox);
+        htf.position = {1.0f, centerY, 0.f};
+
+        RigidBodyComponent headRb{};
+        headRb.mass = 1.f;
+        headRb.invMass = 1.f;
+        headRb.linearDamping = 1.2f;
+        m_registry->addComponent(m_headBox, headRb);
+
+        BoxColliderComponent headCol{};
+        headCol.halfExtents = {0.42f, boxHalfY, 0.42f};
+        headCol.offset = {0.f, 0.f, 0.f};
+        m_registry->addComponent(m_headBox, headCol);
+
+        PrimitiveBoxComponent headVis{};
+        headVis.halfExtents = headCol.halfExtents;
+        headVis.color[0] = 0.92f;
+        headVis.color[1] = 0.62f;
+        headVis.color[2] = 0.18f;
+        m_registry->addComponent(m_headBox, headVis);
+    }
+
+    m_headBox2 = m_registry->createEntity();
+    m_registry->addComponent(m_headBox2, TransformComponent{});
+    m_registry->addComponent(m_headBox2, WorldTransformComponent{});
+    {
+        constexpr float boxHalfY = 0.18f;
+        constexpr float gapAboveHead = 0.08f;
+        constexpr float playerY = 6.f;
+        constexpr float capTop = playerY + 0.88f + 0.53f + 0.35f;
+        const float centerY = capTop + gapAboveHead + boxHalfY;
+
+        auto& htf = m_registry->getComponent<TransformComponent>(m_headBox2);
+        htf.position = {1.0f, centerY, 0.f};
+        htf.rotation = {30.f, 15.f, 80.f};
+
+        RigidBodyComponent headRb{};
+        headRb.mass = 1.f;
+        headRb.invMass = 1.f;
+        headRb.linearDamping = 1.2f;
+        m_registry->addComponent(m_headBox2, headRb);
+
+        BoxColliderComponent headCol{};
+        headCol.halfExtents = {0.42f, boxHalfY, 0.42f};
+        headCol.offset = {0.f, 0.f, 0.f};
+        m_registry->addComponent(m_headBox2, headCol);
+
+        PrimitiveBoxComponent headVis{};
+        headVis.halfExtents = headCol.halfExtents;
+        headVis.color[0] = 0.92f;
+        headVis.color[1] = 0.62f;
+        headVis.color[2] = 0.18f;
+        m_registry->addComponent(m_headBox2, headVis);
+    }
     EntityAttachmentSystem attachEntSys;
     attachEntSys.update(*m_registry);
     WorldTransformSyncSystem worldSnap;
@@ -306,6 +427,7 @@ void SuperHero::onUpdate(double dt)
     const float fdt = static_cast<float>(dt);
     m_handAnimTime += fdt;
     updateAnimClipCrossFade(fdt);
+    m_physicsSys.update(*m_registry, fdt);
 
     AnimationSystem animSys;
     animSys.update(*m_registry, fdt);

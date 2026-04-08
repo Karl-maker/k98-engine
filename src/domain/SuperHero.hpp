@@ -2,6 +2,7 @@
 
 #include "../core/IGame.hpp"
 #include "../ecs/Entity.hpp"
+#include "../systems/PhysicsSystem.hpp"
 
 #include <chrono>
 #include <string>
@@ -57,4 +58,10 @@ private:
     Entity m_character = INVALID_ENTITY;
     Entity m_hat = INVALID_ENTITY;
     Entity m_camera = INVALID_ENTITY;
+    Entity m_ground = INVALID_ENTITY;
+    /// Small dynamic box spawned above the player; rests on the capsule via physics.
+    Entity m_headBox = INVALID_ENTITY;
+    Entity m_headBox2 = INVALID_ENTITY;
+
+    PhysicsSystem m_physicsSys{};
 };

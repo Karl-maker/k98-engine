@@ -58,11 +58,13 @@ public:
 
 private:
     void buildPyramidMesh();
+    void buildBoxMesh();
     void buildTexturedShaderPipeline();
     void buildSkinnedTexturedShaderPipeline();
     void releaseStaticModel();
     void releaseGpuMeshesForKey(const std::string& assetCacheKey);
     void drawPyramid(const Mat4& mvp, const Mat4& model, const float color[3]);
+    void drawBox(const Mat4& mvp, const Mat4& model, const float color[3]);
     void drawTexturedModel(
         Registry& registry,
         const Mat4& pvShifted,
@@ -132,6 +134,9 @@ private:
     unsigned int m_vao = 0;
     unsigned int m_vbo = 0;
     unsigned int m_vertexCount = 0;
+    unsigned int m_boxVao = 0;
+    unsigned int m_boxVbo = 0;
+    unsigned int m_boxVertexCount = 0;
 
     std::unordered_map<std::string, std::vector<StaticMeshPart>> m_gpuMeshByAssetKey;
 
