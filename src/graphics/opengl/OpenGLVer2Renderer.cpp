@@ -886,24 +886,33 @@ void OpenGLVer2Renderer::drawDebugHudOverlay()
     if (!m_debugHud.enabled || !m_debugHudProgram || !m_window)
         return;
 
+    constexpr float kHudScale = 1.52f;
+    auto scaleHudVerts = [](std::vector<float>& tri, float ax, float ay, float s) {
+        for (size_t i = 0; i < tri.size(); i += 6) {
+            tri[i] = ax + (tri[i] - ax) * s;
+            tri[i + 1] = ay + (tri[i + 1] - ay) * s;
+        }
+    };
+
     char text[768];
     std::snprintf(
         text,
         sizeof(text),
-        "FPS: %.1f (preset %d)\nEntities: %d\nLocomotion: %.48s",
+        "FPS: %.1f (preset %d)\nEntities: %d\nLocomotion: %.40s\nState: %.32s",
         static_cast<double>(m_debugHud.fps),
         m_debugHud.targetFpsPreset,
         m_debugHud.entityCount,
-        m_debugHud.locomotionState.empty() ? "-" : m_debugHud.locomotionState.c_str());
+        m_debugHud.locomotionState.empty() ? "-" : m_debugHud.locomotionState.c_str(),
+        m_debugHud.movementState.empty() ? "-" : m_debugHud.movementState.c_str());
 
     const int textW = stb_easy_font_width(text);
     const int textH = stb_easy_font_height(text);
-    const float pad   = 8.0f;
+    const float pad = 8.0f;
     const float textX = pad + 4.0f;
     const float textY = pad + 4.0f;
     const float panelX0 = 2.0f;
     const float panelY0 = 2.0f;
-    const float panelX1 = std::max(320.0f, textX + static_cast<float>(textW) + pad + 4.0f);
+    const float panelX1 = std::max(400.0f, textX + static_cast<float>(textW) + pad + 4.0f);
     const float panelY1 = textY + static_cast<float>(textH) + pad + 4.0f;
 
     alignas(16) unsigned char stbBuf[256000];
@@ -911,7 +920,7 @@ void OpenGLVer2Renderer::drawDebugHudOverlay()
         stb_easy_font_print(textX, textY, text, nullptr, stbBuf, static_cast<int>(sizeof(stbBuf)));
 
     std::vector<float> tri;
-    tri.reserve(static_cast<size_t>(numQuads) * 6u * 6u + 36u);
+    tri.reserve(static_cast<size_t>(numQuads) * 6u * 6u + 48u);
 
     auto pushVert = [&](float x, float y, float r, float g, float b, float a) {
         tri.push_back(x);
@@ -966,6 +975,8 @@ void OpenGLVer2Renderer::drawDebugHudOverlay()
         pushVertBytes(x3, y3, c3);
     }
 
+    scaleHudVerts(tri, panelX0, panelY0, kHudScale);
+
     if (!m_debugHud.debugDetail.empty()) {
         char detailBuf[768];
         std::snprintf(detailBuf, sizeof(detailBuf), "%s", m_debugHud.debugDetail.c_str());
@@ -982,12 +993,32 @@ void OpenGLVer2Renderer::drawDebugHudOverlay()
         const int dnumQuads =
             stb_easy_font_print(dtextX, dtextY, dtext, nullptr, stbBuf, static_cast<int>(sizeof(stbBuf)));
 
-        pushVert(dpanelX0, dpanelY0, pr, pg, pb, pa);
-        pushVert(dpanelX1, dpanelY0, pr, pg, pb, pa);
-        pushVert(dpanelX1, dpanelY1, pr, pg, pb, pa);
-        pushVert(dpanelX0, dpanelY0, pr, pg, pb, pa);
-        pushVert(dpanelX1, dpanelY1, pr, pg, pb, pa);
-        pushVert(dpanelX0, dpanelY1, pr, pg, pb, pa);
+        std::vector<float> triDetail;
+        triDetail.reserve(static_cast<size_t>(dnumQuads) * 6u * 6u + 48u);
+        auto pushVertD = [&](float x, float y, float r, float g, float b, float a) {
+            triDetail.push_back(x);
+            triDetail.push_back(y);
+            triDetail.push_back(r);
+            triDetail.push_back(g);
+            triDetail.push_back(b);
+            triDetail.push_back(a);
+        };
+        auto pushVertBytesD = [&](float x, float y, const unsigned char* rgba) {
+            pushVertD(
+                x,
+                y,
+                static_cast<float>(rgba[0]) / 255.0f,
+                static_cast<float>(rgba[1]) / 255.0f,
+                static_cast<float>(rgba[2]) / 255.0f,
+                static_cast<float>(rgba[3]) / 255.0f);
+        };
+
+        pushVertD(dpanelX0, dpanelY0, pr, pg, pb, pa);
+        pushVertD(dpanelX1, dpanelY0, pr, pg, pb, pa);
+        pushVertD(dpanelX1, dpanelY1, pr, pg, pb, pa);
+        pushVertD(dpanelX0, dpanelY0, pr, pg, pb, pa);
+        pushVertD(dpanelX1, dpanelY1, pr, pg, pb, pa);
+        pushVertD(dpanelX0, dpanelY1, pr, pg, pb, pa);
 
         for (int q = 0; q < dnumQuads; ++q) {
             const unsigned char* base = stbBuf + static_cast<size_t>(q) * 64u;
@@ -1006,13 +1037,16 @@ void OpenGLVer2Renderer::drawDebugHudOverlay()
             std::memcpy(&y3, base + 52, 4);
             std::memcpy(c3, base + 60, 4);
 
-            pushVertBytes(x0, y0, c0);
-            pushVertBytes(x1, y1, c1);
-            pushVertBytes(x2, y2, c2);
-            pushVertBytes(x0, y0, c0);
-            pushVertBytes(x2, y2, c2);
-            pushVertBytes(x3, y3, c3);
+            pushVertBytesD(x0, y0, c0);
+            pushVertBytesD(x1, y1, c1);
+            pushVertBytesD(x2, y2, c2);
+            pushVertBytesD(x0, y0, c0);
+            pushVertBytesD(x2, y2, c2);
+            pushVertBytesD(x3, y3, c3);
         }
+
+        scaleHudVerts(triDetail, dpanelX0, dpanelY0, kHudScale);
+        tri.insert(tri.end(), triDetail.begin(), triDetail.end());
     }
 
     const GLsizei vertCount = static_cast<GLsizei>(tri.size() / 6u);

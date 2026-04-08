@@ -121,6 +121,20 @@ public:
                         resolveCollision(body, bodyB, t, tB, nFlip, pen);
                     }
                 }
+
+                /// Capsule–capsule: bounding spheres at capsule centers (conservative; prevents dynamic characters passing through each other).
+                if (registry.hasComponent<CapsuleColliderComponent>(e) && registry.hasComponent<CapsuleColliderComponent>(other)) {
+                    const auto& aCol = registry.getComponent<CapsuleColliderComponent>(e);
+                    const auto& bCol = registry.getComponent<CapsuleColliderComponent>(other);
+                    const Vec3 aPos{t.position.x + aCol.offset.x, t.position.y + aCol.offset.y, t.position.z + aCol.offset.z};
+                    const Vec3 bPos{tB.position.x + bCol.offset.x, tB.position.y + bCol.offset.y, tB.position.z + bCol.offset.z};
+                    const float aBoundR = aCol.halfHeight + aCol.radius;
+                    const float bBoundR = bCol.halfHeight + bCol.radius;
+                    Vec3 n{};
+                    float pen = 0.f;
+                    if (sphereVsSphere(aPos, aBoundR, bPos, bBoundR, n, pen))
+                        resolveCollision(body, bodyB, t, tB, n, pen);
+                }
             }
 
             if (useProceduralTerrainGround) {

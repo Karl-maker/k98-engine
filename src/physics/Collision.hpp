@@ -120,6 +120,25 @@ inline void resolveCollision(
     b.velocity.x += impulse.x * b.invMass;
     b.velocity.y += impulse.y * b.invMass;
     b.velocity.z += impulse.z * b.invMass;
+
+    const float mu = std::min(a.friction, b.friction);
+    if (mu > 1e-6f) {
+        const float k = std::clamp(mu * 0.52f, 0.f, 0.92f);
+        auto dampTangential = [&](RigidBodyComponent& rb) {
+            if (rb.invMass <= 0.f)
+                return;
+            const float vn = dot(rb.velocity, normal);
+            Vec3 vt{
+                rb.velocity.x - normal.x * vn,
+                rb.velocity.y - normal.y * vn,
+                rb.velocity.z - normal.z * vn};
+            rb.velocity.x = normal.x * vn + vt.x * (1.f - k);
+            rb.velocity.y = normal.y * vn + vt.y * (1.f - k);
+            rb.velocity.z = normal.z * vn + vt.z * (1.f - k);
+        };
+        dampTangential(a);
+        dampTangential(b);
+    }
 }
 
 inline float distPointToAABBSq(const Vec3& p, const Vec3& mn, const Vec3& mx, Vec3& closestOnBox)

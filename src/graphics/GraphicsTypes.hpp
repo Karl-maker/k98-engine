@@ -13,6 +13,8 @@ struct OpenGLDebugHudSnapshot {
     float fps = 0.f;
     int entityCount = 0;
     std::string locomotionState;
+    /// Domain movement FSM (e.g. Idle / Walk / Sprint).
+    std::string movementState;
     int targetFpsPreset = 60;
     /// Multi-line debug text drawn in the top-right when non-empty (requires `enabled`).
     std::string debugDetail;

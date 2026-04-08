@@ -1,5 +1,9 @@
 #include "SuperHero.hpp"
 
+#include "components/ChaseComponent.hpp"
+#include "components/MovementComponent.hpp"
+#include "states/MovementStateEnums.hpp"
+
 #include "../core/ThreadService.hpp"
 #include "../core/assets/AssetManager.hpp"
 #include "../core/assets/importers/GltfModelImporter.hpp"
@@ -13,6 +17,7 @@
 #include "../components/BoneAttachmentComponent.hpp"
 #include "../components/BoneControlComponent.hpp"
 #include "../components/CameraComponent.hpp"
+#include "../components/ThirdPersonComponent.hpp"
 #include "../components/EntityAttachmentComponent.hpp"
 #include "../components/GpuSkinPaletteComponent.hpp"
 #include "../components/HdriEnvironmentComponent.hpp"
@@ -59,6 +64,30 @@
 #include <GLFW/glfw3.h>
 
 namespace {
+
+const char* movementStateToString(MovementState s)
+{
+    switch (s) {
+    case MovementState::Idle:
+        return "Idle";
+    case MovementState::Walk:
+        return "Walk";
+    case MovementState::Run:
+        return "Run";
+    case MovementState::Sprint:
+        return "Sprint";
+    case MovementState::Crouch:
+        return "Crouch";
+    case MovementState::Crawl:
+        return "Crawl";
+    case MovementState::Jump:
+        return "Jump";
+    case MovementState::Falling:
+        return "Falling";
+    default:
+        return "?";
+    }
+}
 
 /// Piecewise cycle: rest → blend to point → hold point → blend to rest → rest (6s loop).
 float rightHandAimCycleWeight(float cycleTimeSec)
@@ -112,6 +141,7 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<HdriEnvironmentComponent>();
     m_registry->registerComponent<LightingComponent>();
     m_registry->registerComponent<CameraComponent>();
+    m_registry->registerComponent<ThirdPersonComponent>();
     /// Required for OpenGLVer2Renderer terrain / preset queries (unique component type ids).
     m_registry->registerComponent<PbrMaterialPresetComponent>();
     m_registry->registerComponent<TerrainChunkComponent>();
@@ -122,6 +152,8 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<SphereColliderComponent>();
     m_registry->registerComponent<ColliderFilterComponent>();
     m_registry->registerComponent<RaycastComponent>();
+    m_registry->registerComponent<MovementComponent>();
+    m_registry->registerComponent<ChaseComponent>();
 }
 
 void SuperHero::updateRightArmAim()
@@ -244,24 +276,75 @@ void SuperHero::updateAnimClipCrossFade(float dt)
     }
 }
 
-void SuperHero::updateCamera()
+void SuperHero::updateThirdPersonCamera(float /*dt*/)
 {
     if (!m_registry || m_camera == INVALID_ENTITY || !m_registry->hasComponent<CameraComponent>(m_camera) ||
-        !m_registry->hasComponent<TransformComponent>(m_camera))
+        !m_registry->hasComponent<ThirdPersonComponent>(m_camera) || !m_registry->hasComponent<TransformComponent>(m_camera))
         return;
     if (m_character == INVALID_ENTITY || !m_registry->hasComponent<TransformComponent>(m_character))
         return;
+    if (!m_renderer || !m_renderer->window())
+        return;
 
+    GLFWwindow* w = m_renderer->window();
     auto& cam = m_registry->getComponent<CameraComponent>(m_camera);
+    auto& tp = m_registry->getComponent<ThirdPersonComponent>(m_camera);
     auto& camTf = m_registry->getComponent<TransformComponent>(m_camera);
     auto& charTf = m_registry->getComponent<TransformComponent>(m_character);
 
-    const Vec3 eye = camTf.position;
-    Vec3 target{
+    if (glfwGetWindowAttrib(w, GLFW_FOCUSED)) {
+        double mx = 0.0;
+        double my = 0.0;
+        glfwGetCursorPos(w, &mx, &my);
+        if (!m_cameraMouseInitialized) {
+            m_lastCamMouseX = mx;
+            m_lastCamMouseY = my;
+            m_cameraMouseInitialized = true;
+        } else {
+            const float dx = static_cast<float>(mx - m_lastCamMouseX);
+            const float dy = static_cast<float>(my - m_lastCamMouseY);
+            m_lastCamMouseX = mx;
+            m_lastCamMouseY = my;
+            tp.orbitYaw -= dx * tp.mouseSensitivity;
+            tp.orbitPitch -= dy * tp.mouseSensitivity;
+            constexpr float pitchLimit = 1.45f;
+            if (tp.orbitPitch > pitchLimit)
+                tp.orbitPitch = pitchLimit;
+            if (tp.orbitPitch < -pitchLimit)
+                tp.orbitPitch = -pitchLimit;
+        }
+    }
+
+    const Vec3 pivot{
+        charTf.position.x,
+        charTf.position.y + tp.orbitPivotHeight,
+        charTf.position.z};
+    const Vec3 target{
         charTf.position.x + cam.lookAtOffset.x,
         charTf.position.y + cam.lookAtOffset.y,
         charTf.position.z + cam.lookAtOffset.z};
+
+    const float cy = std::cos(tp.orbitYaw);
+    const float sy = std::sin(tp.orbitYaw);
+    const float cp = std::cos(tp.orbitPitch);
+    const float sp = std::sin(tp.orbitPitch);
+    const Vec3 orbitDir{cp * sy, sp, cp * cy};
+    const Vec3 eye{
+        pivot.x + tp.orbitDistance * orbitDir.x,
+        pivot.y + tp.orbitDistance * orbitDir.y,
+        pivot.z + tp.orbitDistance * orbitDir.z};
+
+    camTf.position = eye;
     cam.viewMatrix = Mat4::inverse(Mat4::LookAt(eye, target, {0.f, 1.f, 0.f}));
+
+    const Vec3 toTarget{target.x - eye.x, target.y - eye.y, target.z - eye.z};
+    Vec3 flat{toTarget.x, 0.f, toTarget.z};
+    if (lengthSquared(flat) < 1e-10f) {
+        tp.planarMoveForward = {0.f, 0.f, -1.f};
+    } else {
+        tp.planarMoveForward = normalize(flat);
+    }
+    tp.planarMoveRight = normalize(cross({0.f, 1.f, 0.f}, tp.planarMoveForward));
 }
 
 void SuperHero::onStart()
@@ -296,13 +379,19 @@ void SuperHero::onStart()
         return;
     }
 
-    m_registry->addComponent(m_camera, EntityAttachmentComponent{});
-    {
-        auto& ea = m_registry->getComponent<EntityAttachmentComponent>(m_camera);
-        ea.parent = m_character;
-        ea.localOffset = {0.f, 1.55f, -4.2f};
-        ea.rotateOffsetWithParent = true;
-        ea.inheritParentOrientation = false;
+    if (m_registry->hasComponent<ThirdPersonComponent>(m_camera)) {
+        auto& tpInit = m_registry->getComponent<ThirdPersonComponent>(m_camera);
+        tpInit.orbitYaw = 3.14159265f;
+        tpInit.orbitPitch = 0.22f;
+        tpInit.orbitDistance = 4.35f;
+        tpInit.orbitPivotHeight = 0.9f;
+        tpInit.mouseSensitivity = 0.0025f;
+    }
+
+    if (GLFWwindow* win = m_renderer->window()) {
+        glfwSetInputMode(win, GLFW_CURSOR, GLFW_CURSOR_DISABLED);
+        if (glfwRawMouseMotionSupported())
+            glfwSetInputMode(win, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     }
 
     m_physicsSys.useProceduralTerrainGround = false;
@@ -313,12 +402,13 @@ void SuperHero::onStart()
         playerBody.mass = 1.f;
         playerBody.invMass = 1.f;
         playerBody.linearDamping = 2.8f;
+        playerBody.friction = 0.38f;
         m_registry->addComponent(m_character, playerBody);
 
         CapsuleColliderComponent playerCap{};
-        playerCap.radius = 0.35f;
-        playerCap.halfHeight = 0.53f;
-        playerCap.offset = {0.f, 0.88f, 0.f};
+        playerCap.radius = 0.26f;
+        playerCap.halfHeight = 0.40f;
+        playerCap.offset = {0.f, 0.72f, 0.f};
         m_registry->addComponent(m_character, playerCap);
 
         ColliderFilterComponent playerLayers{};
@@ -328,6 +418,20 @@ void SuperHero::onStart()
 
         auto& ctf = m_registry->getComponent<TransformComponent>(m_character);
         ctf.position.y = 2.0f;
+    }
+
+    m_registry->addComponent(m_character, MovementComponent{});
+
+    m_aiChaser = game::factories::spawnBusinessManCharacter(
+        *m_registry, *m_renderer, *m_assetManager, scene.assetCacheKey, {5.f, 2.f, -3.f}, 0.f, false);
+    if (m_aiChaser != INVALID_ENTITY) {
+        MovementComponent chaseMove{};
+        chaseMove.runSpeed = 2.35f;
+        chaseMove.walkSpeed = 1.6f;
+        chaseMove.sprintSpeed = 2.8f;
+        chaseMove.acceleration = 14.f;
+        m_registry->addComponent(m_aiChaser, chaseMove);
+        m_registry->addComponent(m_aiChaser, ChaseComponent{m_character});
     }
 
     m_ground = m_registry->createEntity();
@@ -340,6 +444,7 @@ void SuperHero::onStart()
         RigidBodyComponent groundBody{};
         groundBody.mass = 0.f;
         groundBody.invMass = 0.f;
+        groundBody.friction = 0.78f;
         m_registry->addComponent(m_ground, groundBody);
 
         BoxColliderComponent groundBox{};
@@ -365,7 +470,7 @@ void SuperHero::onStart()
     constexpr float propBoxHalfY = 0.18f;
     constexpr float gapAboveHead = 0.08f;
     constexpr float playerSpawnY = 2.f;
-    constexpr float capTop = playerSpawnY + 0.88f + 0.53f + 0.35f;
+    constexpr float capTop = playerSpawnY + 0.72f + 0.40f + 0.26f;
     const float propBoxCenterY = capTop + gapAboveHead + propBoxHalfY;
     const auto& charTf0 = m_registry->getComponent<TransformComponent>(m_character);
     const Vec3 rayLocal{0.f, 0.f, 1.f};
@@ -392,7 +497,8 @@ void SuperHero::onStart()
         RigidBodyComponent headRb{};
         headRb.mass = 1.f;
         headRb.invMass = 1.f;
-        headRb.linearDamping = 1.2f;
+        headRb.linearDamping = 4.5f;
+        headRb.friction = 0.88f;
         m_registry->addComponent(m_headBox, headRb);
 
         BoxColliderComponent headCol{};
@@ -424,7 +530,8 @@ void SuperHero::onStart()
         RigidBodyComponent headRb{};
         headRb.mass = 1.f;
         headRb.invMass = 1.f;
-        headRb.linearDamping = 1.2f;
+        headRb.linearDamping = 4.5f;
+        headRb.friction = 0.88f;
         m_registry->addComponent(m_headBox2, headRb);
 
         BoxColliderComponent headCol{};
@@ -476,7 +583,7 @@ void SuperHero::onStart()
     attachEntSys.update(*m_registry);
     WorldTransformSyncSystem worldSnap;
     worldSnap.update(*m_registry);
-    updateCamera();
+    updateThirdPersonCamera(0.f);
 }
 
 void SuperHero::onInput()
@@ -484,6 +591,9 @@ void SuperHero::onInput()
     if (!m_renderer || !m_renderer->window())
         return;
     GLFWwindow* w = m_renderer->window();
+    if (glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS)
+        m_shouldClose = true;
+
     const int lNow = glfwGetKey(w, GLFW_KEY_L);
     if (lNow == GLFW_PRESS && !m_debugHudKeyLHeld)
         m_debugHudEnabled = !m_debugHudEnabled;
@@ -498,7 +608,16 @@ void SuperHero::onUpdate(double dt)
     const float fdt = static_cast<float>(dt);
     m_handAnimTime += fdt;
     updateAnimClipCrossFade(fdt);
+
+    updateThirdPersonCamera(fdt);
+
+    GLFWwindow* w = m_renderer ? m_renderer->window() : nullptr;
+    if (w)
+        m_playerController.update(*m_registry, w, m_camera);
+    m_aiController.update(*m_registry);
+    m_movementSystem.update(*m_registry, fdt);
     m_physicsSys.update(*m_registry, fdt);
+    m_collisionSystem.update(*m_registry, fdt);
 
     AnimationSystem animSys;
     animSys.update(*m_registry, fdt);
@@ -515,6 +634,8 @@ void SuperHero::onUpdate(double dt)
 
     if (m_character != INVALID_ENTITY)
         game::factories::updateCharacterSkinPalette(*m_registry, m_character);
+    if (m_aiChaser != INVALID_ENTITY)
+        game::factories::updateCharacterSkinPalette(*m_registry, m_aiChaser);
 
     BoneAttachmentSystem attachSys;
     attachSys.update(*m_registry);
@@ -540,8 +661,6 @@ void SuperHero::onUpdate(double dt)
             m_debugDetailText += buf;
         }
     }
-
-    updateCamera();
 }
 
 void SuperHero::onRender(double)
@@ -568,6 +687,8 @@ void SuperHero::onRender(double)
     hud.entityCount = static_cast<int>(m_registry->getAliveEntityCount());
     hud.targetFpsPreset = m_settings.targetFpsPreset;
     hud.locomotionState = "SuperHero";
+    if (m_character != INVALID_ENTITY && m_registry->hasComponent<MovementComponent>(m_character))
+        hud.movementState = movementStateToString(m_registry->getComponent<MovementComponent>(m_character).state);
     if (m_debugHudEnabled)
         hud.debugDetail = m_debugDetailText;
     m_renderer->setDebugHudSnapshot(std::move(hud));

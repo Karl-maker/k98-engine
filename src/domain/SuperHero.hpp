@@ -4,6 +4,10 @@
 #include "../ecs/Entity.hpp"
 #include "../systems/PhysicsSystem.hpp"
 #include "../systems/RaycastSystem.hpp"
+#include "systems/AiControllerSystem.hpp"
+#include "systems/CollisionSystem.hpp"
+#include "systems/MovementSystem.hpp"
+#include "systems/PlayerControllerSystem.hpp"
 
 #include <chrono>
 #include <string>
@@ -34,7 +38,7 @@ public:
 
 private:
     void registerComponents();
-    void updateCamera();
+    void updateThirdPersonCamera(float dt);
     void updateRightArmAim();
     void updateAnimClipCrossFade(float dt);
 
@@ -52,6 +56,10 @@ private:
     bool m_shouldClose = false;
     /// Edge-detect GLFW_KEY_L for debug HUD toggle.
     bool m_debugHudKeyLHeld = false;
+    /// Mouse deltas for orbit (cursor mode uses absolute position).
+    double m_lastCamMouseX = 0.0;
+    double m_lastCamMouseY = 0.0;
+    bool m_cameraMouseInitialized = false;
 
     Registry* m_registry = nullptr;
     AssetManager* m_assetManager = nullptr;
@@ -67,7 +75,12 @@ private:
     Entity m_headBox2 = INVALID_ENTITY;
     /// Bone-attached line-of-sight ray (e.g. head forward).
     Entity m_headRay = INVALID_ENTITY;
+    Entity m_aiChaser = INVALID_ENTITY;
 
+    PlayerControllerSystem m_playerController{};
+    AIControllerSystem m_aiController{};
+    MovementSystem m_movementSystem{};
+    CollisionSystem m_collisionSystem{};
     PhysicsSystem m_physicsSys{};
     RaycastSystem m_raycastSys{};
 };

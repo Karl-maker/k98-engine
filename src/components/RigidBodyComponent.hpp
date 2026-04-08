@@ -12,5 +12,8 @@ struct RigidBodyComponent
     /// Exponential velocity damping per second (0 = disabled). Reduces jitter on contacts.
     float linearDamping = 0.f;
 
+    /// Coulomb-style tangential damping on contact (0 = none, ~0.85 = grippy). Used in `resolveCollision`.
+    float friction = 0.f;
+
     bool isGrounded = false;
 };

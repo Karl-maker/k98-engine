@@ -6,7 +6,11 @@
 #include "../../components/BoneAttachmentComponent.hpp"
 #include "../../components/BoneControlComponent.hpp"
 #include "../../components/CameraComponent.hpp"
+#include "../../components/CapsuleColliderComponent.hpp"
+#include "../../components/ColliderFilterComponent.hpp"
 #include "../../components/GpuSkinPaletteComponent.hpp"
+#include "../../components/RigidBodyComponent.hpp"
+#include "../../components/ThirdPersonComponent.hpp"
 #include "../../components/HdriEnvironmentComponent.hpp"
 #include "../../components/LightingComponent.hpp"
 #include "../../components/MaterialComponent.hpp"
@@ -24,6 +28,7 @@
 #include "../../graphics/IGraphicsRenderer.hpp"
 #include "../../math/MathOps.hpp"
 #include "../../math/Vec3.hpp"
+#include "../../physics/CollisionLayers.hpp"
 #include "BusinessManExtraAnimations.hpp"
 #include <cmath>
 #include <memory>
@@ -135,10 +140,14 @@ inline BusinessManSceneHandles spawnBusinessManScene(
     registry.addComponent(out.hat, TransformComponent{});
     registry.addComponent(out.hat, WorldTransformComponent{});
     registry.addComponent(out.hat, PrimitivePyramidComponent{});
+    {
+        auto& pyr = registry.getComponent<PrimitivePyramidComponent>(out.hat);
+        pyr.scale = 0.42f;
+    }
     BoneAttachmentComponent attach{};
     attach.skeletonEntity = out.character;
     attach.boneIndex = headBi >= 0 ? headBi : 0;
-    attach.localOffset = {0.f, 0.12f, 0.f};
+    attach.localOffset = {0.f, 0.34f, 0.f};
     attach.localRotation = {0.f, 0.f, 0.f, 1.f};
     registry.addComponent(out.hat, attach);
 
@@ -169,6 +178,7 @@ inline BusinessManSceneHandles spawnBusinessManScene(
     out.camera = registry.createEntity();
     registry.addComponent(out.camera, TransformComponent{});
     registry.addComponent(out.camera, CameraComponent{});
+    registry.addComponent(out.camera, ThirdPersonComponent{});
     {
         auto& ctf = registry.getComponent<TransformComponent>(out.camera);
         ctf.position = {0.f, 0.f, 0.f};
@@ -180,6 +190,91 @@ inline BusinessManSceneHandles spawnBusinessManScene(
     }
 
     return out;
+}
+
+/// Extra rigged character using the same glTF path and GPU cache key as `spawnBusinessManScene` (upload may be a no-op if already uploaded).
+inline Entity spawnBusinessManCharacter(
+    Registry& registry,
+    IGraphicsRenderer& renderer,
+    AssetManager& assets,
+    const std::string& gltfPath,
+    const Vec3& position,
+    float yawRadians,
+    bool addPlayerTag)
+{
+    std::shared_ptr<IAsset> a = assets.load(gltfPath);
+    auto model = std::dynamic_pointer_cast<ModelAsset>(a);
+    if (!model || model->meshes.empty())
+        return INVALID_ENTITY;
+    const std::string cacheKey = gltfPath;
+    if (!renderer.uploadStaticModel(*model, cacheKey))
+        return INVALID_ENTITY;
+
+    Entity character = registry.createEntity();
+    registry.addComponent(character, TransformComponent{});
+    registry.addComponent(character, WorldTransformComponent{});
+    auto& tf = registry.getComponent<TransformComponent>(character);
+    tf.position = position;
+    tf.rotation = {0.f, std::sin(yawRadians * 0.5f), 0.f, std::cos(yawRadians * 0.5f)};
+
+    SkeletonComponent sk;
+    mapSkeletonFromModel(*model, sk);
+    registry.addComponent(character, std::move(sk));
+    auto& skel = registry.getComponent<SkeletonComponent>(character);
+
+    PoseComponent pose;
+    initRestPoseFromSkeleton(skel, pose);
+    registry.addComponent(character, std::move(pose));
+
+    AnimationComponent anim;
+    anim.clips = model->clips;
+    appendBusinessManSecondaryClip(skel, anim);
+    anim.currentClip = anim.clips.empty() ? -1 : 0;
+    anim.currentTime = 0.f;
+    anim.looping = true;
+    registry.addComponent(character, std::move(anim));
+
+    registry.addComponent(character, BoneControlComponent{});
+    registry.addComponent(character, GpuSkinPaletteComponent{});
+    if (addPlayerTag)
+        registry.addComponent(character, PlayerTagComponent{});
+
+    const int meshIndex = 0;
+    if (static_cast<size_t>(meshIndex) < model->meshes.size()) {
+        MeshComponent meshComp;
+        mapMeshFromModel(model->meshes[static_cast<size_t>(meshIndex)], meshComp);
+        registry.addComponent(character, std::move(meshComp));
+
+        MaterialComponent matComp;
+        mapMaterialFromModel(*model, model->meshes[static_cast<size_t>(meshIndex)].materialIndex, matComp);
+        registry.addComponent(character, std::move(matComp));
+    }
+
+    RenderableMeshComponent rm;
+    rm.assetCacheKey = cacheKey;
+    rm.gpuRegistered = true;
+    rm.uniformScale = 1.f;
+    registry.addComponent(character, std::move(rm));
+
+    RigidBodyComponent rb{};
+    rb.mass = 1.f;
+    rb.invMass = 1.f;
+    rb.linearDamping = 2.8f;
+    rb.friction = 0.38f;
+    registry.addComponent(character, rb);
+
+    CapsuleColliderComponent cap{};
+    cap.radius = 0.26f;
+    cap.halfHeight = 0.40f;
+    cap.offset = {0.f, 0.72f, 0.f};
+    registry.addComponent(character, cap);
+
+    ColliderFilterComponent layers{};
+    layers.categoryBits = CollisionLayer::Player;
+    layers.collideMask = 0xFFFFFFFFu;
+    registry.addComponent(character, layers);
+
+    return character;
 }
 
 inline void updateCharacterSkinPalette(Registry& registry, Entity character)
