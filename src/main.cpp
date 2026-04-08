@@ -24,7 +24,7 @@ static void parseArgs(int argc, char** argv, GameLoopPreset& outPreset, bool& ou
 int main(int argc, char** argv)
 {
     GameLoopPreset preset;
-    bool debugHud = true;
+    bool debugHud = false;
     parseArgs(argc, argv, preset, debugHud);
 
     SuperHero::Settings gameSettings;
@@ -38,7 +38,7 @@ int main(int argc, char** argv)
 
     GameLoopConfig config = makeGameLoopConfig(preset);
 
-    std::cout << "SuperHero — presets: --60 | --120   debug: --debug\n";
+    std::cout << "SuperHero — presets: --60 | --120   debug HUD: --debug or press L in window\n";
 
     GameLoop loop(game, clock, config);
     loop.run();

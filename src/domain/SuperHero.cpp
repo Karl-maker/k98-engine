@@ -23,6 +23,8 @@
 #include "../components/MeshComponent.hpp"
 #include "../components/BoxColliderComponent.hpp"
 #include "../components/CapsuleColliderComponent.hpp"
+#include "../components/ColliderFilterComponent.hpp"
+#include "../components/RaycastComponent.hpp"
 #include "../components/PlayerTagComponent.hpp"
 #include "../components/RigidBodyComponent.hpp"
 #include "../components/SphereColliderComponent.hpp"
@@ -41,6 +43,7 @@
 #include "../systems/EntityAttachmentSystem.hpp"
 #include "../systems/PoseSystem.hpp"
 #include "../systems/WorldTransformSyncSystem.hpp"
+#include "../physics/CollisionLayers.hpp"
 
 #include "../math/Mat4.hpp"
 #include "../math/MathOps.hpp"
@@ -51,6 +54,9 @@
 #include <cstdio>
 #include <iostream>
 #include <memory>
+
+#define GLFW_INCLUDE_NONE
+#include <GLFW/glfw3.h>
 
 namespace {
 
@@ -114,6 +120,8 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<BoxColliderComponent>();
     m_registry->registerComponent<CapsuleColliderComponent>();
     m_registry->registerComponent<SphereColliderComponent>();
+    m_registry->registerComponent<ColliderFilterComponent>();
+    m_registry->registerComponent<RaycastComponent>();
 }
 
 void SuperHero::updateRightArmAim()
@@ -313,6 +321,11 @@ void SuperHero::onStart()
         playerCap.offset = {0.f, 0.88f, 0.f};
         m_registry->addComponent(m_character, playerCap);
 
+        ColliderFilterComponent playerLayers{};
+        playerLayers.categoryBits = CollisionLayer::Player;
+        playerLayers.collideMask = 0xFFFFFFFFu;
+        m_registry->addComponent(m_character, playerLayers);
+
         auto& ctf = m_registry->getComponent<TransformComponent>(m_character);
         ctf.position.y = 2.0f;
     }
@@ -334,6 +347,11 @@ void SuperHero::onStart()
         groundBox.offset = {0.f, 0.f, 0.f};
         m_registry->addComponent(m_ground, groundBox);
 
+        ColliderFilterComponent groundLayers{};
+        groundLayers.categoryBits = CollisionLayer::Environment;
+        groundLayers.collideMask = 0xFFFFFFFFu;
+        m_registry->addComponent(m_ground, groundLayers);
+
         PrimitiveBoxComponent groundVis{};
         groundVis.halfExtents = groundBox.halfExtents;
         groundVis.color[0] = 0.3f;
@@ -342,20 +360,34 @@ void SuperHero::onStart()
         m_registry->addComponent(m_ground, groundVis);
     }
 
-    // Dynamic box directly above the character (falls and sits on the capsule).
-    // Capsule top ≈ entityY + offset.y + halfHeight + radius = 2 + 0.88 + 0.53 + 0.35 = 3.76
+    // Dynamic prop boxes along the same world direction as the head ray (local +Z → character rotation).
+    // `PrimitiveBoxComponent` draws them; place in front of the player so the camera sees them.
+    constexpr float propBoxHalfY = 0.18f;
+    constexpr float gapAboveHead = 0.08f;
+    constexpr float playerSpawnY = 2.f;
+    constexpr float capTop = playerSpawnY + 0.88f + 0.53f + 0.35f;
+    const float propBoxCenterY = capTop + gapAboveHead + propBoxHalfY;
+    const auto& charTf0 = m_registry->getComponent<TransformComponent>(m_character);
+    const Vec3 rayLocal{0.f, 0.f, 1.f};
+    Vec3 worldRayDir = Mat4::transformDirection(Mat4::FromQuat(charTf0.rotation), rayLocal);
+    worldRayDir = normalize(worldRayDir);
+    const Vec3 rayAnchor{charTf0.position.x, propBoxCenterY, charTf0.position.z};
+    const Vec3 propPos1{
+        rayAnchor.x + worldRayDir.x * 2.5f,
+        rayAnchor.y + worldRayDir.y * 2.5f,
+        rayAnchor.z + worldRayDir.z * 2.5f};
+    const Vec3 propPos2{
+        rayAnchor.x + worldRayDir.x * 5.0f,
+        rayAnchor.y + worldRayDir.y * 5.0f,
+        rayAnchor.z + worldRayDir.z * 5.0f};
+
     m_headBox = m_registry->createEntity();
     m_registry->addComponent(m_headBox, TransformComponent{});
     m_registry->addComponent(m_headBox, WorldTransformComponent{});
     {
-        constexpr float boxHalfY = 0.18f;
-        constexpr float gapAboveHead = 0.08f;
-        constexpr float playerY = 2.f;
-        constexpr float capTop = playerY + 0.88f + 0.53f + 0.35f;
-        const float centerY = capTop + gapAboveHead + boxHalfY;
-
         auto& htf = m_registry->getComponent<TransformComponent>(m_headBox);
-        htf.position = {1.0f, centerY, 0.f};
+        htf.position = propPos1;
+        htf.rotation = {0.f, 0.f, 0.f, 1.f};
 
         RigidBodyComponent headRb{};
         headRb.mass = 1.f;
@@ -364,9 +396,14 @@ void SuperHero::onStart()
         m_registry->addComponent(m_headBox, headRb);
 
         BoxColliderComponent headCol{};
-        headCol.halfExtents = {0.42f, boxHalfY, 0.42f};
+        headCol.halfExtents = {0.42f, propBoxHalfY, 0.42f};
         headCol.offset = {0.f, 0.f, 0.f};
         m_registry->addComponent(m_headBox, headCol);
+
+        ColliderFilterComponent headPropLayers{};
+        headPropLayers.categoryBits = CollisionLayer::Prop;
+        headPropLayers.collideMask = 0xFFFFFFFFu;
+        m_registry->addComponent(m_headBox, headPropLayers);
 
         PrimitiveBoxComponent headVis{};
         headVis.halfExtents = headCol.halfExtents;
@@ -380,15 +417,9 @@ void SuperHero::onStart()
     m_registry->addComponent(m_headBox2, TransformComponent{});
     m_registry->addComponent(m_headBox2, WorldTransformComponent{});
     {
-        constexpr float boxHalfY = 0.18f;
-        constexpr float gapAboveHead = 0.08f;
-        constexpr float playerY = 6.f;
-        constexpr float capTop = playerY + 0.88f + 0.53f + 0.35f;
-        const float centerY = capTop + gapAboveHead + boxHalfY;
-
         auto& htf = m_registry->getComponent<TransformComponent>(m_headBox2);
-        htf.position = {1.0f, centerY, 0.f};
-        htf.rotation = {30.f, 15.f, 80.f};
+        htf.position = propPos2;
+        htf.rotation = {0.f, 0.f, 0.f, 1.f};
 
         RigidBodyComponent headRb{};
         headRb.mass = 1.f;
@@ -397,17 +428,50 @@ void SuperHero::onStart()
         m_registry->addComponent(m_headBox2, headRb);
 
         BoxColliderComponent headCol{};
-        headCol.halfExtents = {0.42f, boxHalfY, 0.42f};
+        headCol.halfExtents = {0.42f, propBoxHalfY, 0.42f};
         headCol.offset = {0.f, 0.f, 0.f};
         m_registry->addComponent(m_headBox2, headCol);
 
+        ColliderFilterComponent head2PropLayers{};
+        head2PropLayers.categoryBits = CollisionLayer::Prop;
+        head2PropLayers.collideMask = 0xFFFFFFFFu;
+        m_registry->addComponent(m_headBox2, head2PropLayers);
+
         PrimitiveBoxComponent headVis{};
         headVis.halfExtents = headCol.halfExtents;
-        headVis.color[0] = 0.92f;
-        headVis.color[1] = 0.62f;
-        headVis.color[2] = 0.18f;
+        headVis.color[0] = 0.95f;
+        headVis.color[1] = 0.45f;
+        headVis.color[2] = 0.15f;
         m_registry->addComponent(m_headBox2, headVis);
     }
+
+    if (m_registry->hasComponent<SkeletonComponent>(m_character)) {
+        auto& sk = m_registry->getComponent<SkeletonComponent>(m_character);
+        const int headBi = findBoneIndexByNameSubstring(sk, "Head");
+        if (headBi >= 0) {
+            m_headRay = m_registry->createEntity();
+            m_registry->addComponent(m_headRay, TransformComponent{});
+            BoneAttachmentComponent headAttach{};
+            headAttach.skeletonEntity = m_character;
+            headAttach.boneIndex = headBi;
+            headAttach.localOffset = {0.f, 0.1f, 0.08f};
+            m_registry->addComponent(m_headRay, headAttach);
+            RaycastComponent ray{};
+            ray.localDirection = {0.f, 0.f, 1.f};
+            ray.maxDistance = 45.f;
+            // Single ray: set `useCone = false` (default). Cone: `useCone = true` and tune rings/segments
+            // (total dirs ≈ 1 + coneRings * coneSegments, max 48).
+            ray.useCone = true;
+            ray.coneHalfAngleDeg = 14.f;
+            ray.coneRings = 2;
+            ray.coneSegments = 10;
+            ray.layerMask = CollisionLayer::MaskAllButPlayer;
+            ray.ignoreEntity = m_character;
+            ray.debugDraw = true;
+            m_registry->addComponent(m_headRay, ray);
+        }
+    }
+
     EntityAttachmentSystem attachEntSys;
     attachEntSys.update(*m_registry);
     WorldTransformSyncSystem worldSnap;
@@ -417,6 +481,13 @@ void SuperHero::onStart()
 
 void SuperHero::onInput()
 {
+    if (!m_renderer || !m_renderer->window())
+        return;
+    GLFWwindow* w = m_renderer->window();
+    const int lNow = glfwGetKey(w, GLFW_KEY_L);
+    if (lNow == GLFW_PRESS && !m_debugHudKeyLHeld)
+        m_debugHudEnabled = !m_debugHudEnabled;
+    m_debugHudKeyLHeld = (lNow == GLFW_PRESS);
 }
 
 void SuperHero::onUpdate(double dt)
@@ -453,6 +524,22 @@ void SuperHero::onUpdate(double dt)
 
     WorldTransformSyncSystem worldSys;
     worldSys.update(*m_registry);
+
+    m_raycastSys.update(*m_registry, m_physicsSys.grid);
+
+    if (m_debugHudEnabled && m_headRay != INVALID_ENTITY && m_registry->hasComponent<RaycastComponent>(m_headRay)) {
+        const auto& hr = m_registry->getComponent<RaycastComponent>(m_headRay);
+        if (hr.hasHit) {
+            char buf[160];
+            std::snprintf(
+                buf,
+                sizeof(buf),
+                "Head cone hit: t=%.2f entity=%u\n",
+                hr.hitDistance,
+                static_cast<unsigned>(hr.hitEntity));
+            m_debugDetailText += buf;
+        }
+    }
 
     updateCamera();
 }

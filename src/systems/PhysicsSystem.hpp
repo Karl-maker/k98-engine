@@ -8,6 +8,7 @@
 #include "../ecs/Registry.hpp"
 #include "../math/Vec3.hpp"
 #include "../physics/Collision.hpp"
+#include "../physics/CollisionFilter.hpp"
 #include "../physics/SpatialGrid.hpp"
 #include <cmath>
 #include <vector>
@@ -47,6 +48,9 @@ public:
                 // Dynamic–dynamic pairs were resolved twice (once per entity as `e`). Static bodies never
                 // enter the outer loop, so static–dynamic is already single-sided.
                 if (body.invMass > 0.f && bodyB.invMass > 0.f && other < e)
+                    continue;
+
+                if (!entitiesCollideByLayer(registry, e, other))
                     continue;
 
                 Vec3 normal{};

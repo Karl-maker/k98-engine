@@ -14,6 +14,7 @@
 #include "../../components/GpuSkinPaletteComponent.hpp"
 #include "../../components/RenderableMeshComponent.hpp"
 #include "../../components/PrimitiveBoxComponent.hpp"
+#include "../../components/RaycastComponent.hpp"
 #include "../../components/PrimitivePyramidComponent.hpp"
 #include "../../components/PlayerTagComponent.hpp"
 #include "../../components/TransformComponent.hpp"
@@ -586,6 +587,7 @@ bool OpenGLVer2Renderer::init(int width, int height, const char* title, const Op
 
     buildPyramidMesh();
     buildBoxMesh();
+    buildDebugLineMesh();
     buildTexturedShaderPipeline();
     buildSkinnedTexturedShaderPipeline();
 
@@ -690,6 +692,95 @@ void OpenGLVer2Renderer::buildBoxMesh()
     glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(V), (void*)(3 * sizeof(float)));
     glEnableVertexAttribArray(1);
     glBindVertexArray(0);
+}
+
+void OpenGLVer2Renderer::buildDebugLineMesh()
+{
+    glGenVertexArrays(1, &m_lineVao);
+    glGenBuffers(1, &m_lineVbo);
+    glBindVertexArray(m_lineVao);
+    glBindBuffer(GL_ARRAY_BUFFER, m_lineVbo);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(float) * 12, nullptr, GL_DYNAMIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 6, (void*)0);
+    glEnableVertexAttribArray(0);
+    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, sizeof(float) * 6, (void*)(sizeof(float) * 3));
+    glEnableVertexAttribArray(1);
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+}
+
+void OpenGLVer2Renderer::drawDebugRaycasts(RenderContext& ctx)
+{
+    if (!ctx.registry || !m_lineVao || !m_program)
+        return;
+    Registry& registry = *ctx.registry;
+
+    glUseProgram(m_program);
+    GLint uM = glGetUniformLocation(m_program, "uModel");
+    GLint uMvp = glGetUniformLocation(m_program, "uMVP");
+    GLint uC = glGetUniformLocation(m_program, "uColor");
+    GLint uL = glGetUniformLocation(m_program, "uLightDir");
+    GLint uA = glGetUniformLocation(m_program, "uAmbient");
+    const float lightDir[3] = {0.35f, 0.85f, 0.35f};
+    float len = std::sqrt(lightDir[0] * lightDir[0] + lightDir[1] * lightDir[1] + lightDir[2] * lightDir[2]);
+    float ld[3] = {lightDir[0] / len, lightDir[1] / len, lightDir[2] / len};
+    const float amb[3] = {0.35f, 0.35f, 0.38f};
+    glUniform3fv(uL, 1, ld);
+    glUniform3fv(uA, 1, amb);
+
+    const Mat4 model = Mat4::Identity();
+    glUniformMatrix4fv(uM, 1, GL_FALSE, model.m);
+
+    const GLboolean cullWas = glIsEnabled(GL_CULL_FACE);
+    glDisable(GL_CULL_FACE);
+    glDepthFunc(GL_LEQUAL);
+
+    for (Entity e : registry.getEntitiesWith<RaycastComponent, TransformComponent>()) {
+        const auto& rc = registry.getComponent<RaycastComponent>(e);
+        if (!rc.debugDraw)
+            continue;
+
+        const Vec3& a = rc.lastWorldOrigin;
+        const Mat4 mvp = mat4Mul(ctx.pvShifted, mat4Mul(ctx.tmO, model));
+        glUniformMatrix4fv(uMvp, 1, GL_FALSE, mvp.m);
+        glBindVertexArray(m_lineVao);
+        glBindBuffer(GL_ARRAY_BUFFER, m_lineVbo);
+
+        const int nLines = rc.debugRayCount > 0 ? rc.debugRayCount : 1;
+        for (int li = 0; li < nLines; ++li) {
+            Vec3 b = rc.lastRayEnd;
+            if (rc.debugRayCount > 0)
+                b = rc.debugRayEnd[li];
+            float v[12] = {
+                a.x, a.y, a.z, 0.f, 1.f, 0.f,
+                b.x, b.y, b.z, 0.f, 1.f, 0.f,
+            };
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v), v);
+            const float dim = (rc.debugRayCount > 1 && li > 0) ? 0.45f : 1.f;
+            const float colRay[3] = {0.15f * dim + 0.05f, 0.85f * dim + 0.1f, 0.25f * dim + 0.1f};
+            glUniform3fv(uC, 1, colRay);
+            glDrawArrays(GL_LINES, 0, 2);
+        }
+
+        if (rc.hasHit) {
+            const Vec3 n = normalize(rc.hitNormal);
+            const Vec3 h = rc.hitPoint;
+            const float nh = 0.35f;
+            float v2[12] = {
+                h.x, h.y, h.z, 0.f, 0.f, 1.f,
+                h.x + n.x * nh, h.y + n.y * nh, h.z + n.z * nh, 0.f, 0.f, 1.f,
+            };
+            glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(v2), v2);
+            const float colN[3] = {1.f, 0.45f, 0.15f};
+            glUniform3fv(uC, 1, colN);
+            glDrawArrays(GL_LINES, 0, 2);
+        }
+    }
+
+    glBindVertexArray(0);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    if (cullWas)
+        glEnable(GL_CULL_FACE);
 }
 
 void OpenGLVer2Renderer::buildTexturedShaderPipeline() {
@@ -1681,6 +1772,14 @@ void OpenGLVer2Renderer::shutdown() {
         m_boxVao = 0;
     }
     m_boxVertexCount = 0;
+    if (m_lineVbo) {
+        glDeleteBuffers(1, &m_lineVbo);
+        m_lineVbo = 0;
+    }
+    if (m_lineVao) {
+        glDeleteVertexArrays(1, &m_lineVao);
+        m_lineVao = 0;
+    }
     if (m_vbo) {
         glDeleteBuffers(1, &m_vbo);
         m_vbo = 0;
@@ -2256,6 +2355,7 @@ void OpenGLVer2Renderer::executeStaticSkinnedMeshesPass(RenderContext& ctx)
         const Mat4 mvp = mat4Mul(ctx.pvShifted, mat4Mul(ctx.tmO, model));
         drawBox(mvp, model, box.color);
     }
+    drawDebugRaycasts(ctx);
     glUseProgram(m_texProgram);
 }
 

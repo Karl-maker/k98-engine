@@ -59,6 +59,8 @@ public:
 private:
     void buildPyramidMesh();
     void buildBoxMesh();
+    void buildDebugLineMesh();
+    void drawDebugRaycasts(RenderContext& ctx);
     void buildTexturedShaderPipeline();
     void buildSkinnedTexturedShaderPipeline();
     void releaseStaticModel();
@@ -137,6 +139,8 @@ private:
     unsigned int m_boxVao = 0;
     unsigned int m_boxVbo = 0;
     unsigned int m_boxVertexCount = 0;
+    unsigned int m_lineVao = 0;
+    unsigned int m_lineVbo = 0;
 
     std::unordered_map<std::string, std::vector<StaticMeshPart>> m_gpuMeshByAssetKey;
 

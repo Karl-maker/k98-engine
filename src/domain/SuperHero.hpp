@@ -3,6 +3,7 @@
 #include "../core/IGame.hpp"
 #include "../ecs/Entity.hpp"
 #include "../systems/PhysicsSystem.hpp"
+#include "../systems/RaycastSystem.hpp"
 
 #include <chrono>
 #include <string>
@@ -49,6 +50,8 @@ private:
     float m_animClipTimer = 0.f;
     int m_animClipSegment = 0;
     bool m_shouldClose = false;
+    /// Edge-detect GLFW_KEY_L for debug HUD toggle.
+    bool m_debugHudKeyLHeld = false;
 
     Registry* m_registry = nullptr;
     AssetManager* m_assetManager = nullptr;
@@ -62,6 +65,9 @@ private:
     /// Small dynamic box spawned above the player; rests on the capsule via physics.
     Entity m_headBox = INVALID_ENTITY;
     Entity m_headBox2 = INVALID_ENTITY;
+    /// Bone-attached line-of-sight ray (e.g. head forward).
+    Entity m_headRay = INVALID_ENTITY;
 
     PhysicsSystem m_physicsSys{};
+    RaycastSystem m_raycastSys{};
 };
