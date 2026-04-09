@@ -7,6 +7,7 @@
 #include "../../components/BoneControlComponent.hpp"
 #include "../../components/CameraComponent.hpp"
 #include "../../components/CapsuleColliderComponent.hpp"
+#include "CharacterCapsuleDefaults.hpp"
 #include "../../components/ColliderFilterComponent.hpp"
 #include "../../components/GpuSkinPaletteComponent.hpp"
 #include "../../components/RigidBodyComponent.hpp"
@@ -264,9 +265,9 @@ inline Entity spawnBusinessManCharacter(
     registry.addComponent(character, rb);
 
     CapsuleColliderComponent cap{};
-    cap.radius = 0.26f;
-    cap.halfHeight = 0.40f;
-    cap.offset = {0.f, 0.72f, 0.f};
+    cap.radius = kManCapsuleRadius;
+    cap.halfHeight = kManCapsuleHalfHeight;
+    cap.offset = {0.f, kManCapsuleOffsetY, 0.f};
     registry.addComponent(character, cap);
 
     ColliderFilterComponent layers{};

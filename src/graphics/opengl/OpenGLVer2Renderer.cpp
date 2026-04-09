@@ -895,15 +895,29 @@ void OpenGLVer2Renderer::drawDebugHudOverlay()
     };
 
     char text[768];
-    std::snprintf(
-        text,
-        sizeof(text),
-        "FPS: %.1f (preset %d)\nEntities: %d\nLocomotion: %.40s\nState: %.32s",
-        static_cast<double>(m_debugHud.fps),
-        m_debugHud.targetFpsPreset,
-        m_debugHud.entityCount,
-        m_debugHud.locomotionState.empty() ? "-" : m_debugHud.locomotionState.c_str(),
-        m_debugHud.movementState.empty() ? "-" : m_debugHud.movementState.c_str());
+    if (m_debugHud.hudHealthMax > 0.f && m_debugHud.hudHealthCurrent >= 0.f) {
+        std::snprintf(
+            text,
+            sizeof(text),
+            "FPS: %.1f (preset %d)\nEntities: %d\nLocomotion: %.40s\nState: %.32s\nHealth: %.0f / %.0f",
+            static_cast<double>(m_debugHud.fps),
+            m_debugHud.targetFpsPreset,
+            m_debugHud.entityCount,
+            m_debugHud.locomotionState.empty() ? "-" : m_debugHud.locomotionState.c_str(),
+            m_debugHud.movementState.empty() ? "-" : m_debugHud.movementState.c_str(),
+            static_cast<double>(m_debugHud.hudHealthCurrent),
+            static_cast<double>(m_debugHud.hudHealthMax));
+    } else {
+        std::snprintf(
+            text,
+            sizeof(text),
+            "FPS: %.1f (preset %d)\nEntities: %d\nLocomotion: %.40s\nState: %.32s",
+            static_cast<double>(m_debugHud.fps),
+            m_debugHud.targetFpsPreset,
+            m_debugHud.entityCount,
+            m_debugHud.locomotionState.empty() ? "-" : m_debugHud.locomotionState.c_str(),
+            m_debugHud.movementState.empty() ? "-" : m_debugHud.movementState.c_str());
+    }
 
     const int textW = stb_easy_font_width(text);
     const int textH = stb_easy_font_height(text);

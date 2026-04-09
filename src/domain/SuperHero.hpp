@@ -9,6 +9,8 @@
 #include "terrain/TerrainWorldMap.hpp"
 #include "systems/AiControllerSystem.hpp"
 #include "systems/CollisionSystem.hpp"
+#include "systems/HitHurtTriggerSystem.hpp"
+#include "systems/PlayerAiContactDamageSystem.hpp"
 #include "systems/MovementSystem.hpp"
 #include "systems/PlayerControllerSystem.hpp"
 
@@ -85,6 +87,8 @@ private:
     CollisionSystem m_collisionSystem{};
     PhysicsSystem m_physicsSys{};
     RaycastSystem m_raycastSys{};
+    HitHurtTriggerSystem m_hitHurtTrigger{};
+    PlayerAiContactDamageSystem m_contactDamage{};
 
     TerrainChunkSystem m_terrainChunks{};
     TerrainHeightField m_terrainHeights{};

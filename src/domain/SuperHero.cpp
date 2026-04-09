@@ -11,6 +11,7 @@
 #include "../graphics/opengl/OpenGLVer2Renderer.hpp"
 #include "../graphics/GraphicsTypes.hpp"
 #include "../game/factories/BusinessManSceneFactory.hpp"
+#include "../game/factories/CharacterCapsuleDefaults.hpp"
 #include "../game/ModelAssetMapper.hpp"
 
 #include "../components/AnimationComponent.hpp"
@@ -39,6 +40,10 @@
 #include "../components/RenderableMeshComponent.hpp"
 #include "../components/TerrainChunkComponent.hpp"
 #include "../components/TerrainSettingsComponent.hpp"
+#include "../components/HitboxComponent.hpp"
+#include "../components/HurtboxComponent.hpp"
+#include "../components/TriggerVolumeComponent.hpp"
+#include "../components/HealthComponent.hpp"
 #include "../components/SkeletonComponent.hpp"
 #include "../components/TransformComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
@@ -172,6 +177,10 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<RaycastComponent>();
     m_registry->registerComponent<MovementComponent>();
     m_registry->registerComponent<ChaseComponent>();
+    m_registry->registerComponent<HitboxComponent>();
+    m_registry->registerComponent<HurtboxComponent>();
+    m_registry->registerComponent<TriggerVolumeComponent>();
+    m_registry->registerComponent<HealthComponent>();
 }
 
 void SuperHero::updateRightArmAim()
@@ -462,10 +471,8 @@ void SuperHero::onStart()
         float surfaceY = ctf0.position.y;
         if (m_terrainHeights.trySampleHeight(ctf0.position.x, ctf0.position.z, surfaceY)) {
             // Match PhysicsSystem::resolveGround (feet at surfaceY + kTerrainFootClearance).
-            constexpr float capOy = 0.72f;
-            constexpr float capHalfH = 0.40f;
-            constexpr float capR = 0.26f;
-            ctf0.position.y = surfaceY + kTerrainFootClearance - capOy + capHalfH + capR;
+            ctf0.position.y = surfaceY + kTerrainFootClearance - game::factories::kManCapsuleOffsetY +
+                game::factories::kManCapsuleHalfHeight + game::factories::kManCapsuleRadius;
         } else
             ctf0.position.y = 2.0f;
     }
@@ -479,18 +486,34 @@ void SuperHero::onStart()
         m_registry->addComponent(m_character, playerBody);
 
         CapsuleColliderComponent playerCap{};
-        playerCap.radius = 0.26f;
-        playerCap.halfHeight = 0.40f;
-        playerCap.offset = {0.f, 0.82f, 0.f};
+        playerCap.radius = game::factories::kManCapsuleRadius;
+        playerCap.halfHeight = game::factories::kManCapsuleHalfHeight;
+        playerCap.offset = {0.f, game::factories::kManCapsuleOffsetY, 0.f};
         m_registry->addComponent(m_character, playerCap);
 
         ColliderFilterComponent playerLayers{};
         playerLayers.categoryBits = CollisionLayer::Player;
         playerLayers.collideMask = 0xFFFFFFFFu;
         m_registry->addComponent(m_character, playerLayers);
+
+        HurtboxComponent playerHurt{};
+        playerHurt.owner = m_character;
+        playerHurt.shape = CombatShape::Capsule;
+        playerHurt.radius = game::factories::kManHurtboxRadius;
+        playerHurt.capsuleHalfHeight = game::factories::kManHurtboxHalfHeight;
+        playerHurt.offset = {0.f, game::factories::kManCapsuleOffsetY, 0.f};
+        playerHurt.layerBits = 1u << 0;
+        m_registry->addComponent(m_character, playerHurt);
     }
 
     m_registry->addComponent(m_character, MovementComponent{});
+
+    {
+        HealthComponent hp{};
+        hp.current = 100.f;
+        hp.max = 100.f;
+        m_registry->addComponent(m_character, hp);
+    }
 
     m_aiChaser = game::factories::spawnBusinessManCharacter(
         *m_registry, *m_renderer, *m_assetManager, scene.assetCacheKey, {5.f, 2.f, -3.f}, 0.f, false);
@@ -506,11 +529,18 @@ void SuperHero::onStart()
         auto& aiTf = m_registry->getComponent<TransformComponent>(m_aiChaser);
         float aiY = aiTf.position.y;
         if (m_terrainHeights.trySampleHeight(aiTf.position.x, aiTf.position.z, aiY)) {
-            constexpr float capOy = 0.72f;
-            constexpr float capHalfH = 0.40f;
-            constexpr float capR = 0.26f;
-            aiTf.position.y = aiY + kTerrainFootClearance - capOy + capHalfH + capR;
+            aiTf.position.y = aiY + kTerrainFootClearance - game::factories::kManCapsuleOffsetY +
+                game::factories::kManCapsuleHalfHeight + game::factories::kManCapsuleRadius;
         }
+
+        HurtboxComponent aiHurt{};
+        aiHurt.owner = m_aiChaser;
+        aiHurt.shape = CombatShape::Capsule;
+        aiHurt.radius = game::factories::kManHurtboxRadius;
+        aiHurt.capsuleHalfHeight = game::factories::kManHurtboxHalfHeight;
+        aiHurt.offset = {0.f, game::factories::kManCapsuleOffsetY, 0.f};
+        aiHurt.layerBits = 1u << 1;
+        m_registry->addComponent(m_aiChaser, aiHurt);
     }
 
     // Dynamic prop boxes along the same world direction as the head ray (local +Z → character rotation).
@@ -518,7 +548,8 @@ void SuperHero::onStart()
     constexpr float propBoxHalfY = 0.18f;
     constexpr float gapAboveHead = 0.08f;
     constexpr float playerSpawnY = 2.f;
-    constexpr float capTop = playerSpawnY + 0.72f + 0.40f + 0.26f;
+    constexpr float capTop = playerSpawnY + game::factories::kManCapsuleOffsetY + game::factories::kManCapsuleHalfHeight +
+        game::factories::kManCapsuleRadius;
     const float propBoxCenterY = capTop + gapAboveHead + propBoxHalfY;
     const auto& charTf0 = m_registry->getComponent<TransformComponent>(m_character);
     const Vec3 rayLocal{0.f, 0.f, 1.f};
@@ -677,6 +708,18 @@ void SuperHero::onUpdate(double dt)
     m_physicsSys.update(*m_registry, fdt);
     m_collisionSystem.update(*m_registry, fdt);
 
+    constexpr float kAiContactDamage = 12.f;
+    constexpr float kAiContactMinSpeed = 0.55f;
+    constexpr float kAiContactCooldown = 0.75f;
+    m_contactDamage.update(
+        *m_registry,
+        m_character,
+        m_aiChaser,
+        fdt,
+        kAiContactDamage,
+        kAiContactMinSpeed,
+        kAiContactCooldown);
+
     AnimationSystem animSys;
     animSys.update(*m_registry, fdt);
 
@@ -704,6 +747,13 @@ void SuperHero::onUpdate(double dt)
     WorldTransformSyncSystem worldSys;
     worldSys.update(*m_registry);
 
+    m_physicsSys.grid.clear();
+    for (Entity ge : m_registry->getEntitiesWith<TransformComponent>()) {
+        auto& gt = m_registry->getComponent<TransformComponent>(ge);
+        m_physicsSys.grid.insert(ge, gt.position);
+    }
+    m_hitHurtTrigger.update(*m_registry, m_physicsSys.grid);
+
     m_raycastSys.update(*m_registry, m_physicsSys.grid);
 
     if (m_debugHudEnabled && m_headRay != INVALID_ENTITY && m_registry->hasComponent<RaycastComponent>(m_headRay)) {
@@ -716,6 +766,18 @@ void SuperHero::onUpdate(double dt)
                 "Head cone hit: t=%.2f entity=%u\n",
                 hr.hitDistance,
                 static_cast<unsigned>(hr.hitEntity));
+            m_debugDetailText += buf;
+        }
+    }
+
+    if (m_debugHudEnabled) {
+        for (const ContactDamageEvent& ev : m_contactDamage.events()) {
+            char buf[128];
+            std::snprintf(
+                buf,
+                sizeof(buf),
+                "Event: AI contact hit -%.0f HP\n",
+                static_cast<double>(ev.damage));
             m_debugDetailText += buf;
         }
     }
@@ -745,6 +807,13 @@ void SuperHero::onRender(double)
     hud.entityCount = static_cast<int>(m_registry->getAliveEntityCount());
     hud.targetFpsPreset = m_settings.targetFpsPreset;
     hud.locomotionState = "SuperHero";
+    hud.hudHealthCurrent = -1.f;
+    hud.hudHealthMax = 0.f;
+    if (m_character != INVALID_ENTITY && m_registry->hasComponent<HealthComponent>(m_character)) {
+        const auto& hp = m_registry->getComponent<HealthComponent>(m_character);
+        hud.hudHealthCurrent = hp.current;
+        hud.hudHealthMax = hp.max;
+    }
     if (m_character != INVALID_ENTITY && m_registry->hasComponent<MovementComponent>(m_character))
         hud.movementState = movementStateToString(m_registry->getComponent<MovementComponent>(m_character).state);
     if (m_debugHudEnabled)
