@@ -3,6 +3,7 @@
 #include "../core/IGame.hpp"
 #include "../ecs/Entity.hpp"
 #include "../systems/PhysicsSystem.hpp"
+#include "../systems/AudioSystem.hpp"
 #include "../systems/RaycastSystem.hpp"
 #include "../systems/TerrainChunkSystem.hpp"
 #include "../utils/TerrainHeightField.hpp"
@@ -46,6 +47,8 @@ private:
     void updateThirdPersonCamera(float dt);
     void updateRightArmAim();
     void updateAnimClipCrossFade(float dt);
+    /// Copies transforms on the main thread, then ThreadService::parallelRange checksums chunks (no Registry on workers).
+    void runParallelTransformSnapshotPass();
 
     Settings m_settings;
     bool m_debugHudEnabled = false;
@@ -65,11 +68,14 @@ private:
     double m_lastCamMouseX = 0.0;
     double m_lastCamMouseY = 0.0;
     bool m_cameraMouseInitialized = false;
+    bool m_audioCorrectKeyFHeld = false;
 
     Registry* m_registry = nullptr;
     AssetManager* m_assetManager = nullptr;
     ThreadService* m_threadService = nullptr;
     OpenGLVer2Renderer* m_renderer = nullptr;
+
+    AudioSystem m_audioSystem{};
 
     Entity m_character = INVALID_ENTITY;
     Entity m_hat = INVALID_ENTITY;

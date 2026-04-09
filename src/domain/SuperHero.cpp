@@ -43,6 +43,7 @@
 #include "../components/HitboxComponent.hpp"
 #include "../components/HurtboxComponent.hpp"
 #include "../components/TriggerVolumeComponent.hpp"
+#include "../components/AudioComponent.hpp"
 #include "../components/HealthComponent.hpp"
 #include "../components/SkeletonComponent.hpp"
 #include "../components/TransformComponent.hpp"
@@ -61,6 +62,7 @@
 #include "../math/MathOps.hpp"
 #include "../math/Vec3.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -137,6 +139,7 @@ SuperHero::SuperHero(const Settings& settings)
 
 SuperHero::~SuperHero()
 {
+    m_audioSystem.shutdown();
     delete m_renderer;
     delete m_registry;
     delete m_assetManager;
@@ -181,6 +184,7 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<HurtboxComponent>();
     m_registry->registerComponent<TriggerVolumeComponent>();
     m_registry->registerComponent<HealthComponent>();
+    m_registry->registerComponent<AudioComponent>();
 }
 
 void SuperHero::updateRightArmAim()
@@ -409,7 +413,13 @@ void SuperHero::onStart()
     m_threadService = new ThreadService();
     m_renderer = new OpenGLVer2Renderer();
 
-    m_threadService->configure({});
+    {
+        ThreadServiceConfig tcfg;
+        tcfg.workerCount = 0;
+        tcfg.entityParallelThreshold = 8;
+        tcfg.minEntitiesPerChunk = 4;
+        m_threadService->configure(tcfg);
+    }
     m_threadService->start();
 
     registerComponents();
@@ -422,6 +432,10 @@ void SuperHero::onStart()
         return;
     }
     m_renderer->installDefaultRenderPasses();
+
+    if (!m_audioSystem.init()) {
+        std::cerr << "AudioSystem init failed\n";
+    }
 
     const auto scene = game::factories::spawnBusinessManScene(*m_registry, *m_renderer, *m_assetManager);
     m_character = scene.character;
@@ -513,6 +527,15 @@ void SuperHero::onStart()
         hp.current = 100.f;
         hp.max = 100.f;
         m_registry->addComponent(m_character, hp);
+    }
+
+    {
+        AudioComponent sfx{};
+        sfx.clipPath = "assets/audio/correct.mp3";
+        sfx.volume = 1.f;
+        sfx.loop = false;
+        sfx.playing = false;
+        m_registry->addComponent(m_character, sfx);
     }
 
     m_aiChaser = game::factories::spawnBusinessManCharacter(
@@ -677,6 +700,13 @@ void SuperHero::onInput()
     if (lNow == GLFW_PRESS && !m_debugHudKeyLHeld)
         m_debugHudEnabled = !m_debugHudEnabled;
     m_debugHudKeyLHeld = (lNow == GLFW_PRESS);
+
+    const int fNow = glfwGetKey(w, GLFW_KEY_F);
+    if (fNow == GLFW_PRESS && !m_audioCorrectKeyFHeld && m_registry && m_character != INVALID_ENTITY &&
+        m_registry->hasComponent<AudioComponent>(m_character)) {
+        m_registry->getComponent<AudioComponent>(m_character).playing = true;
+    }
+    m_audioCorrectKeyFHeld = (fNow == GLFW_PRESS);
 }
 
 void SuperHero::onUpdate(double dt)
@@ -754,6 +784,10 @@ void SuperHero::onUpdate(double dt)
     }
     m_hitHurtTrigger.update(*m_registry, m_physicsSys.grid);
 
+    runParallelTransformSnapshotPass();
+
+    m_audioSystem.update(*m_registry);
+
     m_raycastSys.update(*m_registry, m_physicsSys.grid);
 
     if (m_debugHudEnabled && m_headRay != INVALID_ENTITY && m_registry->hasComponent<RaycastComponent>(m_headRay)) {
@@ -825,8 +859,35 @@ void SuperHero::onRender(double)
 
 void SuperHero::onStop()
 {
+    m_audioSystem.shutdown();
     if (m_renderer)
         m_renderer->shutdown();
+}
+
+void SuperHero::runParallelTransformSnapshotPass()
+{
+    if (!m_threadService || !m_registry || !m_threadService->isRunning())
+        return;
+
+    std::vector<Vec3> positions;
+    for (Entity e : m_registry->getEntitiesWith<TransformComponent>())
+        positions.push_back(m_registry->getComponent<TransformComponent>(e).position);
+
+    const ThreadServiceConfig& cfg = m_threadService->config();
+    if (positions.size() < cfg.entityParallelThreshold)
+        return;
+
+    std::atomic<std::uint64_t> acc{0};
+    const std::size_t segments = std::max<std::size_t>(1u, static_cast<std::size_t>(m_threadService->workerCount()));
+    m_threadService->parallelRange(positions.size(), segments, [&](std::size_t a, std::size_t b) {
+        std::uint64_t local = 0;
+        for (std::size_t i = a; i < b; ++i) {
+            const Vec3& p = positions[i];
+            local += static_cast<std::uint64_t>(std::fabs(static_cast<double>(p.x + p.y + p.z)) * 1000.0) & 0xFFFFu;
+        }
+        acc.fetch_add(local, std::memory_order_relaxed);
+    });
+    (void)acc.load();
 }
 
 bool SuperHero::shouldClose() const
