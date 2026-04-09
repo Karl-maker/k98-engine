@@ -10,3 +10,4 @@ struct HdriEnvironmentComponent {
     float diffuseEnvironmentWeight = 1.f;
     float specularEnvironmentWeight = 1.f;
 };
+

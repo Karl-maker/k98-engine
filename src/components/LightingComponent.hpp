@@ -28,3 +28,5 @@ struct LightingComponent {
     float rimPower = 4.f;
     float rimIntensity = 0.f;
 };
+
+

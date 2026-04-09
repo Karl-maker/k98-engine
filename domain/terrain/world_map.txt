@@ -1,0 +1,11 @@
+# SuperHero terrain: chunk biome ids (0=plains 1=hills 2=mountains 3=flat)
+# Chunk indices match TerrainChunkSystem (worldX / (chunkSize*scale), floor).
+
+chunkSize 32
+scale 1.0
+renderRadius 4
+
+biome 0 0 1
+biome 1 0 2
+biome 0 1 0
+biome 1 1 1

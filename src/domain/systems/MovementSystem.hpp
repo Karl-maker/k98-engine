@@ -44,10 +44,14 @@ public:
             if (move.wantsToJump && body.isGrounded) {
                 body.velocity.y = move.jumpForce;
                 body.isGrounded = false;
+                move.state = MovementState::Jump;
             }
             move.wantsToJump = false;
 
             move.currentSpeed = std::sqrt(body.velocity.x * body.velocity.x + body.velocity.z * body.velocity.z);
+
+            if (!body.isGrounded && !registry.hasComponent<PlayerTagComponent>(e))
+                move.state = body.velocity.y > 0.35f ? MovementState::Jump : MovementState::Falling;
 
             if (!registry.hasComponent<PlayerTagComponent>(e) && move.state != MovementState::Idle &&
                 length(move.desiredDirection) > 0.01f)
@@ -69,6 +73,9 @@ private:
             return m.crouchSpeed;
         case MovementState::Crawl:
             return m.crawlSpeed;
+        case MovementState::Jump:
+        case MovementState::Falling:
+            return m.walkSpeed * 0.85f;
         case MovementState::Idle:
         default:
             return 0.0f;

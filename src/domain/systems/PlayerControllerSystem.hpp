@@ -3,6 +3,7 @@
 #include "../../ecs/Registry.hpp"
 #include "../../components/CameraComponent.hpp"
 #include "../../components/PlayerTagComponent.hpp"
+#include "../../components/RigidBodyComponent.hpp"
 #include "../../components/ThirdPersonComponent.hpp"
 #include "../../components/TransformComponent.hpp"
 #include "../components/MovementComponent.hpp"
@@ -24,7 +25,7 @@ public:
         if (!registry.hasComponent<CameraComponent>(cameraEntity) || !registry.hasComponent<ThirdPersonComponent>(cameraEntity))
             return;
 
-        auto entities = registry.getEntitiesWith<MovementComponent, PlayerTagComponent>();
+        auto entities = registry.getEntitiesWith<MovementComponent, PlayerTagComponent, RigidBodyComponent, TransformComponent>();
 
         const bool spaceNow = glfwGetKey(window, GLFW_KEY_SPACE) == GLFW_PRESS;
         const bool jumpPress = spaceNow && !m_spaceWasHeld;
@@ -35,18 +36,7 @@ public:
 
         for (auto e : entities) {
             auto& move = registry.getComponent<MovementComponent>(e);
-
-            if (cam.lookAtTarget == INVALID_ENTITY || !registry.hasComponent<TransformComponent>(cam.lookAtTarget)) {
-                move.desiredDirection = {0.f, 0.f, 0.f};
-                move.state = MovementState::Idle;
-                move.wantsToJump = jumpPress;
-                continue;
-            }
-
-            if (!registry.hasComponent<TransformComponent>(e)) {
-                move.wantsToJump = jumpPress;
-                continue;
-            }
+            auto& body = registry.getComponent<RigidBodyComponent>(e);
             auto& transform = registry.getComponent<TransformComponent>(e);
 
             const Vec3 forward = tp.planarMoveForward;
@@ -67,6 +57,26 @@ public:
                 forward.x * f + right.x * r,
                 0.f,
                 forward.z * f + right.z * r};
+
+            if (!body.isGrounded) {
+                move.state = body.velocity.y > 0.35f ? MovementState::Jump : MovementState::Falling;
+                if (lengthSquared(wish) < 1e-8f)
+                    move.desiredDirection = {0.f, 0.f, 0.f};
+                else {
+                    move.desiredDirection = normalize(wish);
+                    if (length(tp.planarMoveForward) > 0.01f)
+                        transform.rotation = smoothYawTowardDirection(transform.rotation, tp.planarMoveForward, dt, 14.f);
+                }
+                move.wantsToJump = jumpPress;
+                continue;
+            }
+
+            if (cam.lookAtTarget == INVALID_ENTITY || !registry.hasComponent<TransformComponent>(cam.lookAtTarget)) {
+                move.desiredDirection = {0.f, 0.f, 0.f};
+                move.state = MovementState::Idle;
+                move.wantsToJump = jumpPress;
+                continue;
+            }
 
             if (lengthSquared(wish) < 1e-8f) {
                 move.desiredDirection = {0.f, 0.f, 0.f};

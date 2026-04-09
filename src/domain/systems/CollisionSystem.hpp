@@ -23,7 +23,7 @@ public:
             const float cz = t.position.z + cap.offset.z;
             const float capBottom = t.position.y + cap.offset.y - cap.halfHeight - cap.radius;
 
-            bool grounded = false;
+            bool onStaticBox = false;
             for (auto other : registry.getEntitiesWith<TransformComponent, RigidBodyComponent, BoxColliderComponent>()) {
                 if (other == e)
                     continue;
@@ -40,11 +40,11 @@ public:
                 const float topY = bt.position.y + box.offset.y + box.halfExtents.y;
 
                 if (cx >= minX && cx <= maxX && cz >= minZ && cz <= maxZ && capBottom <= topY + 0.12f && capBottom >= topY - 0.25f) {
-                    grounded = true;
+                    onStaticBox = true;
                     break;
                 }
             }
-            body.isGrounded = grounded;
+            body.isGrounded = body.isGrounded || onStaticBox;
         }
     }
 };

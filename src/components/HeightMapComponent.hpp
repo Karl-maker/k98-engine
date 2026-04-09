@@ -15,4 +15,14 @@ struct HeightMapComponent {
         z = std::max(0, std::min(z, size - 1));
         return heights[static_cast<size_t>(z * size + x)];
     }
+
+    void set(int x, int z, float h)
+    {
+        if (size <= 0 || heights.empty())
+            return;
+        x = std::max(0, std::min(x, size - 1));
+        z = std::max(0, std::min(z, size - 1));
+        heights[static_cast<size_t>(z * size + x)] = h;
+    }
 };
+

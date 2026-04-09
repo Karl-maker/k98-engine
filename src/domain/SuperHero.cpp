@@ -38,6 +38,7 @@
 #include "../components/PrimitivePyramidComponent.hpp"
 #include "../components/RenderableMeshComponent.hpp"
 #include "../components/TerrainChunkComponent.hpp"
+#include "../components/TerrainSettingsComponent.hpp"
 #include "../components/SkeletonComponent.hpp"
 #include "../components/TransformComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
@@ -107,6 +108,21 @@ float rightHandAimCycleWeight(float cycleTimeSec)
 
 } // namespace
 
+static bool tryLoadTerrainMap(TerrainWorldMap& out)
+{
+    static const char* const paths[] = {
+        "domain/terrain/world_map.txt",
+        "../domain/terrain/world_map.txt",
+        "../../domain/terrain/world_map.txt",
+        "../../../game-engine/domain/terrain/world_map.txt",
+    };
+    for (const char* p : paths) {
+        if (out.loadFromFile(p))
+            return true;
+    }
+    return false;
+}
+
 SuperHero::SuperHero(const Settings& settings)
     : m_settings(settings)
     , m_debugHudEnabled(settings.openglDebugHud)
@@ -145,6 +161,7 @@ void SuperHero::registerComponents()
     /// Required for OpenGLVer2Renderer terrain / preset queries (unique component type ids).
     m_registry->registerComponent<PbrMaterialPresetComponent>();
     m_registry->registerComponent<TerrainChunkComponent>();
+    m_registry->registerComponent<TerrainSettingsComponent>();
     m_registry->registerComponent<HeightMapComponent>();
     m_registry->registerComponent<RigidBodyComponent>();
     m_registry->registerComponent<BoxColliderComponent>();
@@ -394,30 +411,55 @@ void SuperHero::onStart()
             glfwSetInputMode(win, GLFW_RAW_MOUSE_MOTION, GLFW_TRUE);
     }
 
-    m_physicsSys.useProceduralTerrainGround = false;
+    m_physicsSys.useProceduralTerrainGround = true;
+    m_physicsSys.terrainHeightField = &m_terrainHeights;
     m_physicsSys.grid.cellSize = 8.f;
+
+    {
+        Entity terrainSettingsEntity = m_registry->createEntity();
+        TerrainSettingsComponent ts{};
+        if (tryLoadTerrainMap(m_terrainMap)) {
+            ts.chunkSize = m_terrainMap.chunkSize;
+            ts.scale = m_terrainMap.scale;
+            ts.renderRadius = m_terrainMap.renderRadius;
+        }
+        m_registry->addComponent(terrainSettingsEntity, ts);
+
+        auto& ctf0 = m_registry->getComponent<TransformComponent>(m_character);
+        m_terrainChunks.update(
+            *m_registry,
+            ctf0.position,
+            &m_terrainHeights,
+            m_terrainMap.loaded ? &m_terrainMap : nullptr);
+        float surfaceY = ctf0.position.y;
+        if (m_terrainHeights.trySampleHeight(ctf0.position.x, ctf0.position.z, surfaceY)) {
+            // Match PhysicsSystem::resolveGround root Y for capsule (feet on surface).
+            constexpr float capOy = 0.72f;
+            constexpr float capHalfH = 0.40f;
+            constexpr float capR = 0.26f;
+            ctf0.position.y = surfaceY - capOy + capHalfH + capR;
+        } else
+            ctf0.position.y = 2.0f;
+    }
 
     {
         RigidBodyComponent playerBody{};
         playerBody.mass = 1.f;
         playerBody.invMass = 1.f;
         playerBody.linearDamping = 2.8f;
-        playerBody.friction = 0.f;
+        playerBody.friction = 0.38f;
         m_registry->addComponent(m_character, playerBody);
 
         CapsuleColliderComponent playerCap{};
         playerCap.radius = 0.26f;
         playerCap.halfHeight = 0.40f;
-        playerCap.offset = {0.f, 0.72f, 0.f};
+        playerCap.offset = {0.f, 0.92f, 0.f};
         m_registry->addComponent(m_character, playerCap);
 
         ColliderFilterComponent playerLayers{};
         playerLayers.categoryBits = CollisionLayer::Player;
         playerLayers.collideMask = 0xFFFFFFFFu;
         m_registry->addComponent(m_character, playerLayers);
-
-        auto& ctf = m_registry->getComponent<TransformComponent>(m_character);
-        ctf.position.y = 2.0f;
     }
 
     m_registry->addComponent(m_character, MovementComponent{});
@@ -432,37 +474,15 @@ void SuperHero::onStart()
         chaseMove.acceleration = 14.f;
         m_registry->addComponent(m_aiChaser, chaseMove);
         m_registry->addComponent(m_aiChaser, ChaseComponent{m_character});
-    }
 
-    m_ground = m_registry->createEntity();
-    m_registry->addComponent(m_ground, TransformComponent{});
-    m_registry->addComponent(m_ground, WorldTransformComponent{});
-    {
-        auto& gtf = m_registry->getComponent<TransformComponent>(m_ground);
-        gtf.position = {0.f, -8.0f, 0.f};
-
-        RigidBodyComponent groundBody{};
-        groundBody.mass = 0.f;
-        groundBody.invMass = 0.f;
-        groundBody.friction = 0.78f;
-        m_registry->addComponent(m_ground, groundBody);
-
-        BoxColliderComponent groundBox{};
-        groundBox.halfExtents = {6.f, 0.125f, 6.f};
-        groundBox.offset = {0.f, 0.f, 0.f};
-        m_registry->addComponent(m_ground, groundBox);
-
-        ColliderFilterComponent groundLayers{};
-        groundLayers.categoryBits = CollisionLayer::Environment;
-        groundLayers.collideMask = 0xFFFFFFFFu;
-        m_registry->addComponent(m_ground, groundLayers);
-
-        PrimitiveBoxComponent groundVis{};
-        groundVis.halfExtents = groundBox.halfExtents;
-        groundVis.color[0] = 0.3f;
-        groundVis.color[1] = 0.34f;
-        groundVis.color[2] = 0.4f;
-        m_registry->addComponent(m_ground, groundVis);
+        auto& aiTf = m_registry->getComponent<TransformComponent>(m_aiChaser);
+        float aiY = aiTf.position.y;
+        if (m_terrainHeights.trySampleHeight(aiTf.position.x, aiTf.position.z, aiY)) {
+            constexpr float capOy = 0.72f;
+            constexpr float capHalfH = 0.40f;
+            constexpr float capR = 0.26f;
+            aiTf.position.y = aiY - capOy + capHalfH + capR;
+        }
     }
 
     // Dynamic prop boxes along the same world direction as the head ray (local +Z → character rotation).
@@ -608,6 +628,16 @@ void SuperHero::onUpdate(double dt)
     const float fdt = static_cast<float>(dt);
     m_handAnimTime += fdt;
     updateAnimClipCrossFade(fdt);
+
+    if (m_character != INVALID_ENTITY && m_registry->hasComponent<TransformComponent>(m_character)) {
+        const Vec3 pp = m_registry->getComponent<TransformComponent>(m_character).position;
+        m_terrainChunks.update(
+            *m_registry,
+            pp,
+            &m_terrainHeights,
+            m_terrainMap.loaded ? &m_terrainMap : nullptr);
+    }
+    m_physicsSys.terrainHeightField = &m_terrainHeights;
 
     updateThirdPersonCamera(fdt);
 

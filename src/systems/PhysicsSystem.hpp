@@ -10,6 +10,7 @@
 #include "../physics/Collision.hpp"
 #include "../physics/CollisionFilter.hpp"
 #include "../physics/SpatialGrid.hpp"
+#include "../utils/TerrainHeightField.hpp"
 #include <cmath>
 #include <vector>
 
@@ -19,6 +20,8 @@ public:
     SpatialGrid grid;
     /// When false, skips sinusoidal terrain grounding (use static colliders only).
     bool useProceduralTerrainGround = true;
+    /// When set, `trySampleHeight` is used before the legacy sinusoidal fallback (streaming terrain).
+    TerrainHeightField* terrainHeightField = nullptr;
 
     void update(Registry& registry, float dt)
     {
@@ -137,9 +140,26 @@ public:
                 }
             }
 
-            if (useProceduralTerrainGround) {
-                const float ground = getTerrainHeight(t.position.x, t.position.z);
-                resolveGround(body, t, ground);
+            float groundH = 0.f;
+            bool haveTerrainGround = false;
+            float sampleX = t.position.x;
+            float sampleZ = t.position.z;
+            if (registry.hasComponent<CapsuleColliderComponent>(e)) {
+                const auto& cap = registry.getComponent<CapsuleColliderComponent>(e);
+                sampleX += cap.offset.x;
+                sampleZ += cap.offset.z;
+            }
+            if (terrainHeightField && !terrainHeightField->empty()) {
+                haveTerrainGround = terrainHeightField->trySampleHeight(sampleX, sampleZ, groundH);
+            } else if (useProceduralTerrainGround) {
+                groundH = getTerrainHeight(t.position.x, t.position.z);
+                haveTerrainGround = true;
+            }
+            if (haveTerrainGround) {
+                if (registry.hasComponent<CapsuleColliderComponent>(e))
+                    resolveGround(body, t, groundH, &registry.getComponent<CapsuleColliderComponent>(e));
+                else
+                    resolveGround(body, t, groundH, nullptr);
             }
         }
     }
@@ -189,10 +209,29 @@ private:
         return std::sin(x * 0.1f) * 2.0f + std::cos(z * 0.1f) * 2.0f;
     }
 
-    static void resolveGround(RigidBodyComponent& body, TransformComponent& transform, float groundHeight)
+    /// `groundHeight` is world Y of the terrain surface. When a capsule is present, root Y is solved so the
+    /// lowest capsule point matches the surface (avoids Walk/Falling flicker from comparing root to surface).
+    static void resolveGround(
+        RigidBodyComponent& body,
+        TransformComponent& transform,
+        float groundHeight,
+        const CapsuleColliderComponent* capsule)
     {
-        if (transform.position.y < groundHeight) {
-            transform.position.y = groundHeight;
+        float rootOnSurface = groundHeight;
+        if (capsule) {
+            // Lowest point of Y-axis capsule: center.y - halfHeight - radius (in world space along offset).
+            rootOnSurface = groundHeight - capsule->offset.y + capsule->halfHeight + capsule->radius;
+        }
+        constexpr float kSnapDown = 0.22f;
+        constexpr float vMaxForSnap = 0.65f;
+        const float y = transform.position.y;
+        if (y < rootOnSurface) {
+            transform.position.y = rootOnSurface;
+            if (body.velocity.y < 0.f)
+                body.velocity.y = 0.f;
+            body.isGrounded = true;
+        } else if (y <= rootOnSurface + kSnapDown && body.velocity.y <= vMaxForSnap) {
+            transform.position.y = rootOnSurface;
             if (body.velocity.y < 0.f)
                 body.velocity.y = 0.f;
             body.isGrounded = true;

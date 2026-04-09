@@ -4,6 +4,9 @@
 #include "../ecs/Entity.hpp"
 #include "../systems/PhysicsSystem.hpp"
 #include "../systems/RaycastSystem.hpp"
+#include "../systems/TerrainChunkSystem.hpp"
+#include "../utils/TerrainHeightField.hpp"
+#include "terrain/TerrainWorldMap.hpp"
 #include "systems/AiControllerSystem.hpp"
 #include "systems/CollisionSystem.hpp"
 #include "systems/MovementSystem.hpp"
@@ -69,7 +72,6 @@ private:
     Entity m_character = INVALID_ENTITY;
     Entity m_hat = INVALID_ENTITY;
     Entity m_camera = INVALID_ENTITY;
-    Entity m_ground = INVALID_ENTITY;
     /// Small dynamic box spawned above the player; rests on the capsule via physics.
     Entity m_headBox = INVALID_ENTITY;
     Entity m_headBox2 = INVALID_ENTITY;
@@ -83,4 +85,8 @@ private:
     CollisionSystem m_collisionSystem{};
     PhysicsSystem m_physicsSys{};
     RaycastSystem m_raycastSys{};
+
+    TerrainChunkSystem m_terrainChunks{};
+    TerrainHeightField m_terrainHeights{};
+    TerrainWorldMap m_terrainMap{};
 };
