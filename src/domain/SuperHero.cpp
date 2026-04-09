@@ -44,7 +44,12 @@
 #include "../components/HurtboxComponent.hpp"
 #include "../components/TriggerVolumeComponent.hpp"
 #include "../components/AudioComponent.hpp"
+#include "../components/AudioHotkeyEdgeComponent.hpp"
+#include "../components/CharacterPresentationStateComponent.hpp"
+#include "../components/DebugHudStateComponent.hpp"
+#include "../components/GameSessionComponent.hpp"
 #include "../components/HealthComponent.hpp"
+#include "../components/ThirdPersonOrbitInputStateComponent.hpp"
 #include "../components/SkeletonComponent.hpp"
 #include "../components/TransformComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
@@ -116,6 +121,27 @@ float rightHandAimCycleWeight(float cycleTimeSec)
 
 } // namespace
 
+static GameSessionComponent* tryGameSession(Registry* registry, Entity sessionEntity)
+{
+    if (!registry || sessionEntity == INVALID_ENTITY || !registry->hasComponent<GameSessionComponent>(sessionEntity))
+        return nullptr;
+    return &registry->getComponent<GameSessionComponent>(sessionEntity);
+}
+
+static DebugHudStateComponent* tryDebugHud(Registry* registry, Entity sessionEntity)
+{
+    if (!registry || sessionEntity == INVALID_ENTITY || !registry->hasComponent<DebugHudStateComponent>(sessionEntity))
+        return nullptr;
+    return &registry->getComponent<DebugHudStateComponent>(sessionEntity);
+}
+
+static const GameSessionComponent* tryGameSessionConst(const Registry* registry, Entity sessionEntity)
+{
+    if (!registry || sessionEntity == INVALID_ENTITY)
+        return nullptr;
+    return const_cast<Registry*>(registry)->tryGetComponent<GameSessionComponent>(sessionEntity);
+}
+
 static bool tryLoadTerrainMap(TerrainWorldMap& out)
 {
     static const char* const paths[] = {
@@ -132,8 +158,7 @@ static bool tryLoadTerrainMap(TerrainWorldMap& out)
 }
 
 SuperHero::SuperHero(const Settings& settings)
-    : m_settings(settings)
-    , m_debugHudEnabled(settings.openglDebugHud)
+    : m_sessionBootstrap(settings)
 {
 }
 
@@ -185,12 +210,21 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<TriggerVolumeComponent>();
     m_registry->registerComponent<HealthComponent>();
     m_registry->registerComponent<AudioComponent>();
+    m_registry->registerComponent<GameSessionComponent>();
+    m_registry->registerComponent<DebugHudStateComponent>();
+    m_registry->registerComponent<CharacterPresentationStateComponent>();
+    m_registry->registerComponent<ThirdPersonOrbitInputStateComponent>();
+    m_registry->registerComponent<AudioHotkeyEdgeComponent>();
 }
 
 void SuperHero::updateRightArmAim()
 {
-    m_debugDetailText.clear();
+    DebugHudStateComponent* dbg = tryDebugHud(m_registry, m_sessionEntity);
+    if (dbg)
+        dbg->detailText.clear();
     if (!m_registry || m_character == INVALID_ENTITY || m_camera == INVALID_ENTITY)
+        return;
+    if (!m_registry->hasComponent<CharacterPresentationStateComponent>(m_character))
         return;
     if (!m_registry->hasComponent<SkeletonComponent>(m_character) || !m_registry->hasComponent<PoseComponent>(m_character) ||
         !m_registry->hasComponent<BoneControlComponent>(m_character) || !m_registry->hasComponent<TransformComponent>(m_camera))
@@ -208,18 +242,19 @@ void SuperHero::updateRightArmAim()
         static_cast<size_t>(iArm) >= pose.localPose.size())
         return;
 
-    const float aimWeight = rightHandAimCycleWeight(m_handAnimTime);
+    auto& pres = m_registry->getComponent<CharacterPresentationStateComponent>(m_character);
+    const float aimWeight = rightHandAimCycleWeight(pres.rightHandAimCycleTime);
     const Quat R_anim = pose.localPose[static_cast<size_t>(iArm)].rotation;
 
     if (aimWeight < 1e-5f) {
         ctrl.overrides.erase(static_cast<int>(iArm));
-        if (m_debugHudEnabled) {
+        if (dbg && dbg->enabled) {
             char buf[256];
             std::snprintf(
                 buf,
                 sizeof(buf),
                 "Right arm IK\naim weight: %.2f (rest)", static_cast<double>(aimWeight));
-            m_debugDetailText = buf;
+            dbg->detailText = buf;
         }
         return;
     }
@@ -256,7 +291,7 @@ void SuperHero::updateRightArmAim()
     entry.blendWeight = aimWeight;
     ctrl.overrides[static_cast<int>(iArm)] = entry;
 
-    if (m_debugHudEnabled) {
+    if (dbg && dbg->enabled) {
         const float angleDeg =
             std::acos(std::max(-1.f, std::min(1.f, dot(dCur, dWant)))) * 180.0f / 3.14159265f;
         char buf[640];
@@ -281,7 +316,7 @@ void SuperHero::updateRightArmAim()
             static_cast<double>(camPos.x),
             static_cast<double>(camPos.y),
             static_cast<double>(camPos.z));
-        m_debugDetailText = buf;
+        dbg->detailText = buf;
     }
 }
 
@@ -289,20 +324,22 @@ void SuperHero::updateAnimClipCrossFade(float dt)
 {
     if (!m_registry || m_character == INVALID_ENTITY)
         return;
-    if (!m_registry->hasComponent<AnimationComponent>(m_character))
+    if (!m_registry->hasComponent<AnimationComponent>(m_character) ||
+        !m_registry->hasComponent<CharacterPresentationStateComponent>(m_character))
         return;
     auto& anim = m_registry->getComponent<AnimationComponent>(m_character);
     if (anim.clips.size() < 2)
         return;
 
+    auto& pres = m_registry->getComponent<CharacterPresentationStateComponent>(m_character);
     constexpr float segmentSec = 6.f;
     constexpr float crossFadeSec = 0.45f;
-    m_animClipTimer += dt;
+    pres.animClipCrossFadeTimer += dt;
     const float cycle = segmentSec * 2.f;
-    const float t = std::fmod(m_animClipTimer, cycle);
+    const float t = std::fmod(pres.animClipCrossFadeTimer, cycle);
     const int seg = (t < segmentSec) ? 0 : 1;
-    if (seg != m_animClipSegment) {
-        m_animClipSegment = seg;
+    if (seg != pres.animClipCrossFadeSegment) {
+        pres.animClipCrossFadeSegment = seg;
         anim.requestCrossFadeToClip(seg, crossFadeSec);
     }
 }
@@ -313,6 +350,8 @@ void SuperHero::updateThirdPersonCamera(float /*dt*/)
         !m_registry->hasComponent<ThirdPersonComponent>(m_camera) || !m_registry->hasComponent<TransformComponent>(m_camera))
         return;
     if (m_character == INVALID_ENTITY || !m_registry->hasComponent<TransformComponent>(m_character))
+        return;
+    if (!m_registry->hasComponent<ThirdPersonOrbitInputStateComponent>(m_camera))
         return;
     if (!m_renderer || !m_renderer->window())
         return;
@@ -328,20 +367,21 @@ void SuperHero::updateThirdPersonCamera(float /*dt*/)
     auto& tp = m_registry->getComponent<ThirdPersonComponent>(m_camera);
     auto& camTf = m_registry->getComponent<TransformComponent>(m_camera);
     auto& charTf = m_registry->getComponent<TransformComponent>(m_character);
+    auto& orbitIn = m_registry->getComponent<ThirdPersonOrbitInputStateComponent>(m_camera);
 
     if (glfwGetWindowAttrib(w, GLFW_FOCUSED)) {
         double mx = 0.0;
         double my = 0.0;
         glfwGetCursorPos(w, &mx, &my);
-        if (!m_cameraMouseInitialized) {
-            m_lastCamMouseX = mx;
-            m_lastCamMouseY = my;
-            m_cameraMouseInitialized = true;
+        if (!orbitIn.cursorSampleInitialized) {
+            orbitIn.lastCursorX = mx;
+            orbitIn.lastCursorY = my;
+            orbitIn.cursorSampleInitialized = true;
         } else {
-            const float dx = static_cast<float>(mx - m_lastCamMouseX);
-            const float dy = static_cast<float>(my - m_lastCamMouseY);
-            m_lastCamMouseX = mx;
-            m_lastCamMouseY = my;
+            const float dx = static_cast<float>(mx - orbitIn.lastCursorX);
+            const float dy = static_cast<float>(my - orbitIn.lastCursorY);
+            orbitIn.lastCursorX = mx;
+            orbitIn.lastCursorY = my;
             tp.orbitYaw -= dx * tp.mouseSensitivity;
             tp.orbitPitch -= dy * tp.mouseSensitivity;
             constexpr float pitchLimit = 1.45f;
@@ -424,11 +464,23 @@ void SuperHero::onStart()
 
     registerComponents();
 
+    m_sessionEntity = m_registry->createEntity();
+    {
+        GameSessionComponent sess{};
+        sess.settings = m_sessionBootstrap;
+        sess.shouldClose = false;
+        m_registry->addComponent(m_sessionEntity, sess);
+        DebugHudStateComponent dbg{};
+        dbg.enabled = m_sessionBootstrap.openglDebugHud;
+        m_registry->addComponent(m_sessionEntity, dbg);
+    }
+
     GraphicsInitOptions glOpts;
-    glOpts.swapInterval = m_settings.glSwapInterval;
+    glOpts.swapInterval = m_sessionBootstrap.glSwapInterval;
     if (!m_renderer->init(1280, 720, "SuperHero", glOpts)) {
         std::cerr << "OpenGL renderer init failed\n";
-        m_shouldClose = true;
+        if (GameSessionComponent* s = tryGameSession(m_registry, m_sessionEntity))
+            s->shouldClose = true;
         return;
     }
     m_renderer->installDefaultRenderPasses();
@@ -443,9 +495,13 @@ void SuperHero::onStart()
     m_camera = scene.camera;
     if (m_character == INVALID_ENTITY) {
         std::cerr << "Failed to spawn business/man scene.gltf\n";
-        m_shouldClose = true;
+        if (GameSessionComponent* s = tryGameSession(m_registry, m_sessionEntity))
+            s->shouldClose = true;
         return;
     }
+
+    m_registry->addComponent(m_character, CharacterPresentationStateComponent{});
+    m_registry->addComponent(m_character, AudioHotkeyEdgeComponent{});
 
     if (m_registry->hasComponent<ThirdPersonComponent>(m_camera)) {
         auto& tpInit = m_registry->getComponent<ThirdPersonComponent>(m_camera);
@@ -454,6 +510,7 @@ void SuperHero::onStart()
         tpInit.orbitDistance = 8.35f;
         tpInit.orbitPivotHeight = 0.9f;
         tpInit.mouseSensitivity = 0.0025f;
+        m_registry->addComponent(m_camera, ThirdPersonOrbitInputStateComponent{});
     }
 
     if (GLFWwindow* win = m_renderer->window()) {
@@ -693,29 +750,40 @@ void SuperHero::onInput()
     if (!m_renderer || !m_renderer->window())
         return;
     GLFWwindow* w = m_renderer->window();
-    if (glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS)
-        m_shouldClose = true;
+    if (glfwGetKey(w, GLFW_KEY_Q) == GLFW_PRESS) {
+        if (GameSessionComponent* s = tryGameSession(m_registry, m_sessionEntity))
+            s->shouldClose = true;
+    }
 
+    DebugHudStateComponent* dbg = tryDebugHud(m_registry, m_sessionEntity);
     const int lNow = glfwGetKey(w, GLFW_KEY_L);
-    if (lNow == GLFW_PRESS && !m_debugHudKeyLHeld)
-        m_debugHudEnabled = !m_debugHudEnabled;
-    m_debugHudKeyLHeld = (lNow == GLFW_PRESS);
+    if (dbg && lNow == GLFW_PRESS && !dbg->toggleKeyHeld)
+        dbg->enabled = !dbg->enabled;
+    if (dbg)
+        dbg->toggleKeyHeld = (lNow == GLFW_PRESS);
 
     const int fNow = glfwGetKey(w, GLFW_KEY_F);
-    if (fNow == GLFW_PRESS && !m_audioCorrectKeyFHeld && m_registry && m_character != INVALID_ENTITY &&
+    if (m_registry && m_character != INVALID_ENTITY && m_registry->hasComponent<AudioHotkeyEdgeComponent>(m_character) &&
         m_registry->hasComponent<AudioComponent>(m_character)) {
-        m_registry->getComponent<AudioComponent>(m_character).playing = true;
+        auto& hot = m_registry->getComponent<AudioHotkeyEdgeComponent>(m_character);
+        if (fNow == GLFW_PRESS && !hot.keyHeld)
+            m_registry->getComponent<AudioComponent>(m_character).playing = true;
+        hot.keyHeld = (fNow == GLFW_PRESS);
     }
-    m_audioCorrectKeyFHeld = (fNow == GLFW_PRESS);
 }
 
 void SuperHero::onUpdate(double dt)
 {
-    if (m_shouldClose || !m_registry)
+    if (!m_registry)
         return;
+    if (GameSessionComponent* s = tryGameSession(m_registry, m_sessionEntity)) {
+        if (s->shouldClose)
+            return;
+    }
 
     const float fdt = static_cast<float>(dt);
-    m_handAnimTime += fdt;
+    if (m_character != INVALID_ENTITY && m_registry->hasComponent<CharacterPresentationStateComponent>(m_character))
+        m_registry->getComponent<CharacterPresentationStateComponent>(m_character).rightHandAimCycleTime += fdt;
     updateAnimClipCrossFade(fdt);
 
     if (m_character != INVALID_ENTITY && m_registry->hasComponent<TransformComponent>(m_character)) {
@@ -790,7 +858,8 @@ void SuperHero::onUpdate(double dt)
 
     m_raycastSys.update(*m_registry, m_physicsSys.grid);
 
-    if (m_debugHudEnabled && m_headRay != INVALID_ENTITY && m_registry->hasComponent<RaycastComponent>(m_headRay)) {
+    DebugHudStateComponent* dbg = tryDebugHud(m_registry, m_sessionEntity);
+    if (dbg && dbg->enabled && m_headRay != INVALID_ENTITY && m_registry->hasComponent<RaycastComponent>(m_headRay)) {
         const auto& hr = m_registry->getComponent<RaycastComponent>(m_headRay);
         if (hr.hasHit) {
             char buf[160];
@@ -800,11 +869,11 @@ void SuperHero::onUpdate(double dt)
                 "Head cone hit: t=%.2f entity=%u\n",
                 hr.hitDistance,
                 static_cast<unsigned>(hr.hitEntity));
-            m_debugDetailText += buf;
+            dbg->detailText += buf;
         }
     }
 
-    if (m_debugHudEnabled) {
+    if (dbg && dbg->enabled) {
         for (const ContactDamageEvent& ev : m_contactDamage.events()) {
             char buf[128];
             std::snprintf(
@@ -812,34 +881,42 @@ void SuperHero::onUpdate(double dt)
                 sizeof(buf),
                 "Event: AI contact hit -%.0f HP\n",
                 static_cast<double>(ev.damage));
-            m_debugDetailText += buf;
+            dbg->detailText += buf;
         }
     }
 }
 
 void SuperHero::onRender(double)
 {
-    if (m_shouldClose || !m_renderer || !m_registry)
+    if (!m_renderer || !m_registry)
         return;
+    if (const GameSessionComponent* s = tryGameSessionConst(m_registry, m_sessionEntity)) {
+        if (s->shouldClose)
+            return;
+    }
 
+    DebugHudStateComponent* dbg = tryDebugHud(m_registry, m_sessionEntity);
     using clock = std::chrono::steady_clock;
     const auto now = clock::now();
-    if (m_haveFrameTime) {
-        const double frameDt = std::chrono::duration<double>(now - m_lastFrameTime).count();
-        if (frameDt > 1e-9) {
-            const float inst = static_cast<float>(1.0 / frameDt);
-            m_fpsSmooth = m_fpsSmooth * 0.92f + inst * 0.08f;
+    if (dbg) {
+        if (dbg->haveFrameTime) {
+            const double frameDt = std::chrono::duration<double>(now - dbg->lastFrameTime).count();
+            if (frameDt > 1e-9) {
+                const float inst = static_cast<float>(1.0 / frameDt);
+                dbg->fpsSmooth = dbg->fpsSmooth * 0.92f + inst * 0.08f;
+            }
+        } else {
+            dbg->haveFrameTime = true;
         }
-    } else {
-        m_haveFrameTime = true;
+        dbg->lastFrameTime = now;
     }
-    m_lastFrameTime = now;
 
     OpenGLDebugHudSnapshot hud;
-    hud.enabled = m_debugHudEnabled;
-    hud.fps = m_fpsSmooth;
+    const GameSessionComponent* sess = tryGameSessionConst(m_registry, m_sessionEntity);
+    hud.enabled = dbg ? dbg->enabled : false;
+    hud.fps = dbg ? dbg->fpsSmooth : 0.f;
     hud.entityCount = static_cast<int>(m_registry->getAliveEntityCount());
-    hud.targetFpsPreset = m_settings.targetFpsPreset;
+    hud.targetFpsPreset = sess ? sess->settings.targetFpsPreset : 60;
     hud.locomotionState = "SuperHero";
     hud.hudHealthCurrent = -1.f;
     hud.hudHealthMax = 0.f;
@@ -850,8 +927,8 @@ void SuperHero::onRender(double)
     }
     if (m_character != INVALID_ENTITY && m_registry->hasComponent<MovementComponent>(m_character))
         hud.movementState = movementStateToString(m_registry->getComponent<MovementComponent>(m_character).state);
-    if (m_debugHudEnabled)
-        hud.debugDetail = m_debugDetailText;
+    if (dbg && dbg->enabled)
+        hud.debugDetail = dbg->detailText;
     m_renderer->setDebugHudSnapshot(std::move(hud));
 
     m_renderer->renderFrame(*m_registry);
@@ -892,8 +969,10 @@ void SuperHero::runParallelTransformSnapshotPass()
 
 bool SuperHero::shouldClose() const
 {
-    if (m_shouldClose)
-        return true;
+    if (const GameSessionComponent* s = tryGameSessionConst(m_registry, m_sessionEntity)) {
+        if (s->shouldClose)
+            return true;
+    }
     if (m_renderer && m_renderer->shouldClose())
         return true;
     return false;

@@ -2,6 +2,7 @@
 
 #include "../core/IGame.hpp"
 #include "../ecs/Entity.hpp"
+#include "../components/GameSessionComponent.hpp"
 #include "../systems/PhysicsSystem.hpp"
 #include "../systems/AudioSystem.hpp"
 #include "../systems/RaycastSystem.hpp"
@@ -15,9 +16,6 @@
 #include "systems/MovementSystem.hpp"
 #include "systems/PlayerControllerSystem.hpp"
 
-#include <chrono>
-#include <string>
-
 class Registry;
 class AssetManager;
 class ThreadService;
@@ -25,11 +23,7 @@ class OpenGLVer2Renderer;
 
 class SuperHero final : public IGame {
 public:
-    struct Settings {
-        bool openglDebugHud = false;
-        int glSwapInterval = 1;
-        int targetFpsPreset = 60;
-    };
+    using Settings = GameSessionComponent::Settings;
 
     explicit SuperHero(const Settings& settings);
     ~SuperHero() override;
@@ -50,25 +44,9 @@ private:
     /// Copies transforms on the main thread, then ThreadService::parallelRange checksums chunks (no Registry on workers).
     void runParallelTransformSnapshotPass();
 
-    Settings m_settings;
-    bool m_debugHudEnabled = false;
-    std::string m_debugDetailText;
-    float m_fpsSmooth = 0.f;
-    bool m_haveFrameTime = false;
-    std::chrono::steady_clock::time_point m_lastFrameTime{};
-    /// Seconds; drives right-hand rest → point → rest cycle.
-    float m_handAnimTime = 0.f;
-    /// Loops idle (clip 0) ↔ secondary clip (clip 1) with cross-fade.
-    float m_animClipTimer = 0.f;
-    int m_animClipSegment = 0;
-    bool m_shouldClose = false;
-    /// Edge-detect GLFW_KEY_L for debug HUD toggle.
-    bool m_debugHudKeyLHeld = false;
-    /// Mouse deltas for orbit (cursor mode uses absolute position).
-    double m_lastCamMouseX = 0.0;
-    double m_lastCamMouseY = 0.0;
-    bool m_cameraMouseInitialized = false;
-    bool m_audioCorrectKeyFHeld = false;
+    /// Until `onStart` creates `m_sessionEntity`, holds ctor settings (registry does not exist yet).
+    GameSessionComponent::Settings m_sessionBootstrap{};
+    Entity m_sessionEntity = INVALID_ENTITY;
 
     Registry* m_registry = nullptr;
     AssetManager* m_assetManager = nullptr;
