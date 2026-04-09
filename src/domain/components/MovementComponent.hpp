@@ -24,6 +24,12 @@ struct MovementComponent
     float airControl   = 0.3f;
     float jumpForce    = 5.0f;
 
+    /// Used with `TerrainHeightField` in `MovementSystem`: shorter probe = sharper local grade.
+    float slopeProbeDistance = 0.38f;
+    /// Uphill speed ≈ `1 / (1 + uphillSlowdown * grade)` with `grade = Δheight / probe` (tan-like).
+    float uphillSlowdown = 2.6f;
+    float minUphillSpeedFactor = 0.17f;
+
     // RUNTIME
     float currentSpeed = 0.0f;
 };

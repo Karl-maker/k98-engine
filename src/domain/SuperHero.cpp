@@ -734,7 +734,7 @@ void SuperHero::onUpdate(double dt)
     if (w)
         m_playerController.update(*m_registry, w, m_camera, fdt);
     m_aiController.update(*m_registry);
-    m_movementSystem.update(*m_registry, fdt);
+    m_movementSystem.update(*m_registry, fdt, &m_terrainHeights);
     m_physicsSys.update(*m_registry, fdt);
     m_collisionSystem.update(*m_registry, fdt);
 
