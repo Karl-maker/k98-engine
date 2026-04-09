@@ -49,6 +49,7 @@
 #include "../systems/EntityAttachmentSystem.hpp"
 #include "../systems/PoseSystem.hpp"
 #include "../systems/WorldTransformSyncSystem.hpp"
+#include "systems/ThirdPersonCameraCollisionSystem.hpp"
 #include "../physics/CollisionLayers.hpp"
 
 #include "../math/Mat4.hpp"
@@ -303,6 +304,12 @@ void SuperHero::updateThirdPersonCamera(float /*dt*/)
     if (!m_renderer || !m_renderer->window())
         return;
 
+    m_physicsSys.grid.clear();
+    for (Entity ge : m_registry->getEntitiesWith<TransformComponent>()) {
+        auto& gt = m_registry->getComponent<TransformComponent>(ge);
+        m_physicsSys.grid.insert(ge, gt.position);
+    }
+
     GLFWwindow* w = m_renderer->window();
     auto& cam = m_registry->getComponent<CameraComponent>(m_camera);
     auto& tp = m_registry->getComponent<ThirdPersonComponent>(m_camera);
@@ -346,10 +353,31 @@ void SuperHero::updateThirdPersonCamera(float /*dt*/)
     const float cp = std::cos(tp.orbitPitch);
     const float sp = std::sin(tp.orbitPitch);
     const Vec3 orbitDir{cp * sy, sp, cp * cy};
-    const Vec3 eye{
+    const Vec3 eyeDesired{
         pivot.x + tp.orbitDistance * orbitDir.x,
         pivot.y + tp.orbitDistance * orbitDir.y,
         pivot.z + tp.orbitDistance * orbitDir.z};
+
+    Vec3 eye = eyeDesired;
+    if (tp.cameraCollisionEnabled) {
+        ThirdPersonCameraCollisionSystem::Settings camCol{};
+        camCol.cameraCollisionRadius = tp.cameraCollisionRadius;
+        camCol.minOrbitDistance = tp.cameraMinOrbitDistance;
+        camCol.groundClearance = tp.cameraGroundClearance;
+        camCol.sideProbeOffset = tp.cameraSideProbeOffset;
+        camCol.obstructionRelaxMeters = tp.cameraObstructionRelaxMeters;
+        camCol.obstructionLayerMask = tp.cameraObstructionLayerMask;
+        camCol.blockDynamicColliders = tp.cameraBlockDynamicColliders;
+        ThirdPersonCameraCollisionSystem::resolve(
+            *m_registry,
+            m_physicsSys.grid,
+            &m_terrainHeights,
+            m_character,
+            pivot,
+            eyeDesired,
+            camCol,
+            eye);
+    }
 
     camTf.position = eye;
     cam.viewMatrix = Mat4::inverse(Mat4::LookAt(eye, target, {0.f, 1.f, 0.f}));
@@ -400,7 +428,7 @@ void SuperHero::onStart()
         auto& tpInit = m_registry->getComponent<ThirdPersonComponent>(m_camera);
         tpInit.orbitYaw = 3.14159265f;
         tpInit.orbitPitch = 0.22f;
-        tpInit.orbitDistance = 4.35f;
+        tpInit.orbitDistance = 8.35f;
         tpInit.orbitPivotHeight = 0.9f;
         tpInit.mouseSensitivity = 0.0025f;
     }
@@ -433,11 +461,11 @@ void SuperHero::onStart()
             m_terrainMap.loaded ? &m_terrainMap : nullptr);
         float surfaceY = ctf0.position.y;
         if (m_terrainHeights.trySampleHeight(ctf0.position.x, ctf0.position.z, surfaceY)) {
-            // Match PhysicsSystem::resolveGround root Y for capsule (feet on surface).
+            // Match PhysicsSystem::resolveGround (feet at surfaceY + kTerrainFootClearance).
             constexpr float capOy = 0.72f;
             constexpr float capHalfH = 0.40f;
             constexpr float capR = 0.26f;
-            ctf0.position.y = surfaceY - capOy + capHalfH + capR;
+            ctf0.position.y = surfaceY + kTerrainFootClearance - capOy + capHalfH + capR;
         } else
             ctf0.position.y = 2.0f;
     }
@@ -453,7 +481,7 @@ void SuperHero::onStart()
         CapsuleColliderComponent playerCap{};
         playerCap.radius = 0.26f;
         playerCap.halfHeight = 0.40f;
-        playerCap.offset = {0.f, 0.92f, 0.f};
+        playerCap.offset = {0.f, 0.82f, 0.f};
         m_registry->addComponent(m_character, playerCap);
 
         ColliderFilterComponent playerLayers{};
@@ -481,7 +509,7 @@ void SuperHero::onStart()
             constexpr float capOy = 0.72f;
             constexpr float capHalfH = 0.40f;
             constexpr float capR = 0.26f;
-            aiTf.position.y = aiY - capOy + capHalfH + capR;
+            aiTf.position.y = aiY + kTerrainFootClearance - capOy + capHalfH + capR;
         }
     }
 

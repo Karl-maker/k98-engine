@@ -14,6 +14,9 @@
 #include <cmath>
 #include <vector>
 
+/// Added to sampled terrain height so rig feet clear the ground mesh (capsule vs visual).
+inline constexpr float kTerrainFootClearance = 0.16f;
+
 class PhysicsSystem {
 public:
     Vec3 gravity{0.f, -9.81f, 0.f};
@@ -217,10 +220,11 @@ private:
         float groundHeight,
         const CapsuleColliderComponent* capsule)
     {
-        float rootOnSurface = groundHeight;
+        const float surfaceY = groundHeight + kTerrainFootClearance;
+        float rootOnSurface = surfaceY;
         if (capsule) {
             // Lowest point of Y-axis capsule: center.y - halfHeight - radius (in world space along offset).
-            rootOnSurface = groundHeight - capsule->offset.y + capsule->halfHeight + capsule->radius;
+            rootOnSurface = surfaceY - capsule->offset.y + capsule->halfHeight + capsule->radius;
         }
         constexpr float kSnapDown = 0.22f;
         constexpr float vMaxForSnap = 0.65f;
