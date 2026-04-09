@@ -1,11 +1,13 @@
 #pragma once
 
 #include "../../ecs/Registry.hpp"
+#include "../../components/PlayerTagComponent.hpp"
 #include "../../components/RigidBodyComponent.hpp"
 #include "../../components/TransformComponent.hpp"
 #include "../components/MovementComponent.hpp"
 #include "../MovementHelpers.hpp"
 #include "../states/MovementStateEnums.hpp"
+#include "../../math/MathOps.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -39,9 +41,6 @@ public:
             body.velocity.x = body.velocity.x + (desiredHoriz.x - body.velocity.x) * t;
             body.velocity.z = body.velocity.z + (desiredHoriz.z - body.velocity.z) * t;
 
-            if (length(move.desiredDirection) > 0.01f)
-                transform.rotation = lookRotationYUp(move.desiredDirection);
-
             if (move.wantsToJump && body.isGrounded) {
                 body.velocity.y = move.jumpForce;
                 body.isGrounded = false;
@@ -49,6 +48,10 @@ public:
             move.wantsToJump = false;
 
             move.currentSpeed = std::sqrt(body.velocity.x * body.velocity.x + body.velocity.z * body.velocity.z);
+
+            if (!registry.hasComponent<PlayerTagComponent>(e) && move.state != MovementState::Idle &&
+                length(move.desiredDirection) > 0.01f)
+                transform.rotation = smoothYawTowardDirection(transform.rotation, move.desiredDirection, dt, 12.f);
         }
     }
 

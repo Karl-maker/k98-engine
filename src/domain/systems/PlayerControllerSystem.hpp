@@ -6,6 +6,7 @@
 #include "../../components/ThirdPersonComponent.hpp"
 #include "../../components/TransformComponent.hpp"
 #include "../components/MovementComponent.hpp"
+#include "../MovementHelpers.hpp"
 #include "../states/MovementStateEnums.hpp"
 #include "../../math/MathOps.hpp"
 #include "../../math/Vec3.hpp"
@@ -16,7 +17,7 @@
 class PlayerControllerSystem
 {
 public:
-    void update(Registry& registry, GLFWwindow* window, Entity cameraEntity)
+    void update(Registry& registry, GLFWwindow* window, Entity cameraEntity, float dt)
     {
         if (!window || cameraEntity == INVALID_ENTITY)
             return;
@@ -41,6 +42,12 @@ public:
                 move.wantsToJump = jumpPress;
                 continue;
             }
+
+            if (!registry.hasComponent<TransformComponent>(e)) {
+                move.wantsToJump = jumpPress;
+                continue;
+            }
+            auto& transform = registry.getComponent<TransformComponent>(e);
 
             const Vec3 forward = tp.planarMoveForward;
             const Vec3 right = tp.planarMoveRight;
@@ -70,6 +77,9 @@ public:
                                     glfwGetKey(window, GLFW_KEY_RIGHT_SHIFT) == GLFW_PRESS;
                 move.state = sprint ? MovementState::Sprint : MovementState::Walk;
             }
+
+            if (move.state != MovementState::Idle && length(tp.planarMoveForward) > 0.01f)
+                transform.rotation = smoothYawTowardDirection(transform.rotation, tp.planarMoveForward, dt, 14.f);
 
             move.wantsToJump = jumpPress;
         }

@@ -402,7 +402,7 @@ void SuperHero::onStart()
         playerBody.mass = 1.f;
         playerBody.invMass = 1.f;
         playerBody.linearDamping = 2.8f;
-        playerBody.friction = 0.38f;
+        playerBody.friction = 0.f;
         m_registry->addComponent(m_character, playerBody);
 
         CapsuleColliderComponent playerCap{};
@@ -613,7 +613,7 @@ void SuperHero::onUpdate(double dt)
 
     GLFWwindow* w = m_renderer ? m_renderer->window() : nullptr;
     if (w)
-        m_playerController.update(*m_registry, w, m_camera);
+        m_playerController.update(*m_registry, w, m_camera, fdt);
     m_aiController.update(*m_registry);
     m_movementSystem.update(*m_registry, fdt);
     m_physicsSys.update(*m_registry, fdt);
