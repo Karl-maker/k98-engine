@@ -13,6 +13,7 @@
 #include "../../components/CameraComponent.hpp"
 #include "../../components/GpuSkinPaletteComponent.hpp"
 #include "../../components/RenderableMeshComponent.hpp"
+#include "../../components/StaticMeshMaterialOverrideComponent.hpp"
 #include "../../components/PrimitiveBoxComponent.hpp"
 #include "../../components/RaycastComponent.hpp"
 #include "../../components/PrimitivePyramidComponent.hpp"
@@ -1577,16 +1578,93 @@ void OpenGLVer2Renderer::getFloatingOriginMatrices(
     m_floatOriginCacheValid = true;
 }
 
+unsigned int OpenGLVer2Renderer::cachedOverrideTexture(const std::string& path, bool srgb)
+{
+    if (path.empty())
+        return 0;
+    const std::string key = std::string(srgb ? "s:" : "l:") + path;
+    auto found = m_overrideTextureCache.find(key);
+    if (found != m_overrideTextureCache.end())
+        return found->second;
+    const GLuint t = loadTexture2DFromFile(path, srgb);
+    if (t)
+        m_overrideTextureCache[key] = t;
+    return t;
+}
+
+void OpenGLVer2Renderer::releaseOverrideTextureCache()
+{
+    for (auto& kv : m_overrideTextureCache) {
+        if (kv.second)
+            glDeleteTextures(1, &kv.second);
+    }
+    m_overrideTextureCache.clear();
+}
+
+void OpenGLVer2Renderer::resolveStaticMeshPartTextures(
+    const StaticMeshPart& part,
+    const StaticMeshMaterialOverrideComponent* ov,
+    unsigned int& outAlb,
+    unsigned int& outN,
+    unsigned int& outOcc,
+    unsigned int& outMr,
+    bool& outUseN,
+    bool& outUseOcc,
+    bool& outUseMr)
+{
+    outAlb = part.albedo;
+    outN = part.hasNormalMap ? part.normalMap : part.albedo;
+    outOcc = part.hasOcclusion ? part.occlusionMap : part.albedo;
+    outMr = part.hasMetallicRoughness ? part.metallicRoughnessMap : part.albedo;
+    outUseN = part.hasNormalMap;
+    outUseOcc = part.hasOcclusion;
+    outUseMr = part.hasMetallicRoughness;
+    if (!ov)
+        return;
+    if (!ov->albedoTexturePath.empty()) {
+        const unsigned int t = cachedOverrideTexture(ov->albedoTexturePath, true);
+        if (t)
+            outAlb = t;
+    }
+    if (!ov->normalTexturePath.empty()) {
+        const unsigned int t = cachedOverrideTexture(ov->normalTexturePath, false);
+        if (t) {
+            outN = t;
+            outUseN = true;
+        }
+    }
+    if (!ov->occlusionTexturePath.empty()) {
+        const unsigned int t = cachedOverrideTexture(ov->occlusionTexturePath, false);
+        if (t) {
+            outOcc = t;
+            outUseOcc = true;
+        }
+    }
+    if (!ov->metallicRoughnessTexturePath.empty()) {
+        const unsigned int t = cachedOverrideTexture(ov->metallicRoughnessTexturePath, false);
+        if (t) {
+            outMr = t;
+            outUseMr = true;
+        }
+    }
+}
+
 void OpenGLVer2Renderer::drawTexturedModel(
     Registry& registry,
     const Mat4& pvShifted,
     const Mat4& tmO,
     const Mat4& model,
     const std::string& assetCacheKey,
-    const Vec3& cameraWorld) {
+    const Vec3& cameraWorld,
+    Entity meshEntity)
+{
     auto it = m_gpuMeshByAssetKey.find(assetCacheKey);
     if (it == m_gpuMeshByAssetKey.end() || it->second.empty() || m_texProgram == 0)
         return;
+
+    const StaticMeshMaterialOverrideComponent* ov = nullptr;
+    if (meshEntity != INVALID_ENTITY && registry.hasComponent<StaticMeshMaterialOverrideComponent>(meshEntity))
+        ov = &registry.getComponent<StaticMeshMaterialOverrideComponent>(meshEntity);
 
     glUseProgram(m_texProgram);
 
@@ -1617,24 +1695,33 @@ void OpenGLVer2Renderer::drawTexturedModel(
     glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
     for (const StaticMeshPart& part : it->second) {
-        glUniform1i(uUseN, part.hasNormalMap ? 1 : 0);
-        glUniform1i(uUseOcc, part.hasOcclusion ? 1 : 0);
-        glUniform1i(uUseMr, part.hasMetallicRoughness ? 1 : 0);
+        unsigned int alb = 0;
+        unsigned int nmap = 0;
+        unsigned int occ = 0;
+        unsigned int mr = 0;
+        bool useN = false;
+        bool useOcc = false;
+        bool useMr = false;
+        resolveStaticMeshPartTextures(part, ov, alb, nmap, occ, mr, useN, useOcc, useMr);
+
+        glUniform1i(uUseN, useN ? 1 : 0);
+        glUniform1i(uUseOcc, useOcc ? 1 : 0);
+        glUniform1i(uUseMr, useMr ? 1 : 0);
 
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, part.albedo);
+        glBindTexture(GL_TEXTURE_2D, alb);
         glUniform1i(uAlb, 0);
 
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, part.hasNormalMap ? part.normalMap : part.albedo);
+        glBindTexture(GL_TEXTURE_2D, nmap);
         glUniform1i(uNorm, 1);
 
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, part.hasOcclusion ? part.occlusionMap : part.albedo);
+        glBindTexture(GL_TEXTURE_2D, occ);
         glUniform1i(uOcc, 2);
 
         glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, part.hasMetallicRoughness ? part.metallicRoughnessMap : part.albedo);
+        glBindTexture(GL_TEXTURE_2D, mr);
         glUniform1i(uMr, 3);
 
         glBindVertexArray(part.vao);
@@ -1657,10 +1744,16 @@ void OpenGLVer2Renderer::drawTexturedSkinnedModel(
     const Mat4& model,
     const std::string& assetCacheKey,
     const std::vector<Mat4>& jointSkinMatrices,
-    const Vec3& cameraWorld) {
+    const Vec3& cameraWorld,
+    Entity meshEntity)
+{
     auto it = m_gpuMeshByAssetKey.find(assetCacheKey);
     if (it == m_gpuMeshByAssetKey.end() || it->second.empty() || m_skinTexProgram == 0)
         return;
+
+    const StaticMeshMaterialOverrideComponent* ov = nullptr;
+    if (meshEntity != INVALID_ENTITY && registry.hasComponent<StaticMeshMaterialOverrideComponent>(meshEntity))
+        ov = &registry.getComponent<StaticMeshMaterialOverrideComponent>(meshEntity);
 
     static std::vector<Mat4> pad;
     pad.assign(static_cast<size_t>(kMaxSkinJoints), Mat4::Identity());
@@ -1705,24 +1798,33 @@ void OpenGLVer2Renderer::drawTexturedSkinnedModel(
         if (!part.skinned)
             continue;
 
-        glUniform1i(uUseN, part.hasNormalMap ? 1 : 0);
-        glUniform1i(uUseOcc, part.hasOcclusion ? 1 : 0);
-        glUniform1i(uUseMr, part.hasMetallicRoughness ? 1 : 0);
+        unsigned int alb = 0;
+        unsigned int nmap = 0;
+        unsigned int occ = 0;
+        unsigned int mr = 0;
+        bool useN = false;
+        bool useOcc = false;
+        bool useMr = false;
+        resolveStaticMeshPartTextures(part, ov, alb, nmap, occ, mr, useN, useOcc, useMr);
+
+        glUniform1i(uUseN, useN ? 1 : 0);
+        glUniform1i(uUseOcc, useOcc ? 1 : 0);
+        glUniform1i(uUseMr, useMr ? 1 : 0);
 
         glActiveTexture(GL_TEXTURE0);
-        glBindTexture(GL_TEXTURE_2D, part.albedo);
+        glBindTexture(GL_TEXTURE_2D, alb);
         glUniform1i(uAlb, 0);
 
         glActiveTexture(GL_TEXTURE1);
-        glBindTexture(GL_TEXTURE_2D, part.hasNormalMap ? part.normalMap : part.albedo);
+        glBindTexture(GL_TEXTURE_2D, nmap);
         glUniform1i(uNorm, 1);
 
         glActiveTexture(GL_TEXTURE2);
-        glBindTexture(GL_TEXTURE_2D, part.hasOcclusion ? part.occlusionMap : part.albedo);
+        glBindTexture(GL_TEXTURE_2D, occ);
         glUniform1i(uOcc, 2);
 
         glActiveTexture(GL_TEXTURE3);
-        glBindTexture(GL_TEXTURE_2D, part.hasMetallicRoughness ? part.metallicRoughnessMap : part.albedo);
+        glBindTexture(GL_TEXTURE_2D, mr);
         glUniform1i(uMr, 3);
 
         glBindVertexArray(part.vao);
@@ -1757,20 +1859,28 @@ void OpenGLVer2Renderer::drawTexturedSkinnedModel(
         for (const StaticMeshPart& part : it->second) {
             if (part.skinned)
                 continue;
-            glUniform1i(uUseN, part.hasNormalMap ? 1 : 0);
-            glUniform1i(uUseOcc, part.hasOcclusion ? 1 : 0);
-            glUniform1i(uUseMr, part.hasMetallicRoughness ? 1 : 0);
+            unsigned int alb = 0;
+            unsigned int nmap = 0;
+            unsigned int occ = 0;
+            unsigned int mr = 0;
+            bool useN = false;
+            bool useOcc = false;
+            bool useMr = false;
+            resolveStaticMeshPartTextures(part, ov, alb, nmap, occ, mr, useN, useOcc, useMr);
+            glUniform1i(uUseN, useN ? 1 : 0);
+            glUniform1i(uUseOcc, useOcc ? 1 : 0);
+            glUniform1i(uUseMr, useMr ? 1 : 0);
             glActiveTexture(GL_TEXTURE0);
-            glBindTexture(GL_TEXTURE_2D, part.albedo);
+            glBindTexture(GL_TEXTURE_2D, alb);
             glUniform1i(uAlb, 0);
             glActiveTexture(GL_TEXTURE1);
-            glBindTexture(GL_TEXTURE_2D, part.hasNormalMap ? part.normalMap : part.albedo);
+            glBindTexture(GL_TEXTURE_2D, nmap);
             glUniform1i(uNorm, 1);
             glActiveTexture(GL_TEXTURE2);
-            glBindTexture(GL_TEXTURE_2D, part.hasOcclusion ? part.occlusionMap : part.albedo);
+            glBindTexture(GL_TEXTURE_2D, occ);
             glUniform1i(uOcc, 2);
             glActiveTexture(GL_TEXTURE3);
-            glBindTexture(GL_TEXTURE_2D, part.hasMetallicRoughness ? part.metallicRoughnessMap : part.albedo);
+            glBindTexture(GL_TEXTURE_2D, mr);
             glUniform1i(uMr, 3);
             glBindVertexArray(part.vao);
             glDrawElements(GL_TRIANGLES, part.indexCount, GL_UNSIGNED_INT, nullptr);
@@ -1792,6 +1902,7 @@ void OpenGLVer2Renderer::drawTexturedSkinnedModel(
 void OpenGLVer2Renderer::shutdown() {
     clearRenderPasses();
     releaseTerrainMeshes();
+    releaseOverrideTextureCache();
     releaseStaticModel();
     if (m_hdriTexture != 0) {
         glDeleteTextures(1, &m_hdriTexture);
@@ -1951,8 +2062,11 @@ void OpenGLVer2Renderer::syncTerrainMeshes(Registry& registry)
         if (m_terrainMeshes.count(e) != 0)
             continue;
 
-        const auto& hm = registry.getComponent<HeightMapComponent>(e);
         const auto& tc = registry.getComponent<TerrainChunkComponent>(e);
+        if (tc.skipProceduralTerrainGpuMesh)
+            continue;
+
+        const auto& hm = registry.getComponent<HeightMapComponent>(e);
         const float cell = tc.scale;
         const int n = hm.size;
         const int cells = tc.size;
@@ -2375,13 +2489,14 @@ void OpenGLVer2Renderer::executeStaticSkinnedMeshesPass(RenderContext& ctx)
                     combined,
                     smc.assetCacheKey,
                     skinPal.jointSkinMatrices,
-                    ctx.cameraWorld);
+                    ctx.cameraWorld,
+                    e);
             else
                 drawTexturedModel(
-                    registry, ctx.pvShifted, ctx.tmO, combined, smc.assetCacheKey, ctx.cameraWorld);
+                    registry, ctx.pvShifted, ctx.tmO, combined, smc.assetCacheKey, ctx.cameraWorld, e);
         } else {
             drawTexturedModel(
-                registry, ctx.pvShifted, ctx.tmO, combined, smc.assetCacheKey, ctx.cameraWorld);
+                registry, ctx.pvShifted, ctx.tmO, combined, smc.assetCacheKey, ctx.cameraWorld, e);
         }
     }
 

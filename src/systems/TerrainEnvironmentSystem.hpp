@@ -11,6 +11,9 @@
 #include "../systems/SpacialGridSystem.hpp"
 #include "../utils/TerrainHeightField.hpp"
 
+class AssetManager;
+class IGraphicsRenderer;
+
 // -----------------------------------------------------------------------------
 // Owns procedural terrain streaming (TerrainChunkSystem) and the CPU heightfield
 // mirror. Call updateStreaming once per frame before gameplay integration.
@@ -24,9 +27,13 @@ public:
     TerrainHeightField&       heightField() { return m_heights; }
     const TerrainHeightField& heightField() const { return m_heights; }
 
-    void updateStreaming(Registry& registry, Vec3 viewerWorldPos)
+    void updateStreaming(
+        Registry& registry,
+        Vec3 viewerWorldPos,
+        AssetManager* assets = nullptr,
+        IGraphicsRenderer* renderer = nullptr)
     {
-        m_chunks.update(registry, viewerWorldPos, &m_heights);
+        m_chunks.update(registry, viewerWorldPos, &m_heights, nullptr, assets, renderer);
     }
 
     void snapGroundedActorsToSurface(Registry& registry, SpatialGridSystem& grid)
@@ -36,7 +43,7 @@ public:
             viewer = registry.getComponent<Position>(e);
             break;
         }
-        m_chunks.update(registry, viewer, &m_heights);
+        m_chunks.update(registry, viewer, &m_heights, nullptr, nullptr, nullptr);
 
         m_boundsSync.update(registry);
         grid.update(registry);

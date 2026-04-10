@@ -8,6 +8,7 @@
 #include "../core/assets/AssetManager.hpp"
 #include "../core/assets/importers/GltfModelImporter.hpp"
 #include "../ecs/Registry.hpp"
+#include "../graphics/IGraphicsRenderer.hpp"
 #include "../graphics/opengl/OpenGLVer2Renderer.hpp"
 #include "../graphics/GraphicsTypes.hpp"
 #include "../game/factories/BusinessManSceneFactory.hpp"
@@ -38,7 +39,9 @@
 #include "../components/PrimitiveBoxComponent.hpp"
 #include "../components/PrimitivePyramidComponent.hpp"
 #include "../components/RenderableMeshComponent.hpp"
+#include "../components/StaticMeshMaterialOverrideComponent.hpp"
 #include "../components/TerrainChunkComponent.hpp"
+#include "../components/TerrainChunkTileSetComponent.hpp"
 #include "../components/TerrainSettingsComponent.hpp"
 #include "../components/HitboxComponent.hpp"
 #include "../components/HurtboxComponent.hpp"
@@ -185,6 +188,7 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<EntityAttachmentComponent>();
     m_registry->registerComponent<GpuSkinPaletteComponent>();
     m_registry->registerComponent<RenderableMeshComponent>();
+    m_registry->registerComponent<StaticMeshMaterialOverrideComponent>();
     m_registry->registerComponent<PrimitiveBoxComponent>();
     m_registry->registerComponent<PrimitivePyramidComponent>();
     m_registry->registerComponent<PlayerTagComponent>();
@@ -196,6 +200,7 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<PbrMaterialPresetComponent>();
     m_registry->registerComponent<TerrainChunkComponent>();
     m_registry->registerComponent<TerrainSettingsComponent>();
+    m_registry->registerComponent<TerrainChunkTileSetComponent>();
     m_registry->registerComponent<HeightMapComponent>();
     m_registry->registerComponent<RigidBodyComponent>();
     m_registry->registerComponent<BoxColliderComponent>();
@@ -531,6 +536,21 @@ void SuperHero::onStart()
             ts.scale = m_terrainMap.scale;
             ts.renderRadius = m_terrainMap.renderRadius;
         }
+        // Optional: repeating glTF floor tile — bake heights for physics + draw textured mesh (see TerrainSettingsComponent).
+        // ts.gltfFloorAssetPath = "assets/terrain/floor_tile.glb";
+        // ts.gltfFloorUniformScale = 1.f; // tune so mesh spans chunkSize * scale in X/Z
+        // Override glTF materials per chunk (empty = use glTF maps): albedo sRGB, others linear.
+        // ts.gltfFloorAlbedoOverride = "assets/terrain/custom_albedo.png";
+        // ts.gltfFloorNormalOverride = "assets/terrain/custom_normal.png";
+        // ts.gltfFloorOcclusionOverride = "assets/terrain/custom_ao.png";
+        // ts.gltfFloorMetallicRoughnessOverride = "assets/terrain/custom_mr.png";
+        //
+        // Per-chunk pieces (chunk grid indices, may be negative): overrides single-tile `gltfFloorAssetPath`.
+        // TerrainChunkTileSetComponent tiles{};
+        // tiles.meshPathFormat = "assets/terrain/pieces/chunk_%d_%d.glb";
+        // tiles.albedoPathFormat = "assets/terrain/pieces/chunk_%d_%d_albedo.png";
+        // tiles.normalPathFormat = "assets/terrain/pieces/chunk_%d_%d_normal.png";
+        // m_registry->addComponent(terrainSettingsEntity, tiles);
         m_registry->addComponent(terrainSettingsEntity, ts);
 
         auto& ctf0 = m_registry->getComponent<TransformComponent>(m_character);
@@ -538,7 +558,9 @@ void SuperHero::onStart()
             *m_registry,
             ctf0.position,
             &m_terrainHeights,
-            m_terrainMap.loaded ? &m_terrainMap : nullptr);
+            m_terrainMap.loaded ? &m_terrainMap : nullptr,
+            m_assetManager,
+            static_cast<IGraphicsRenderer*>(m_renderer));
         float surfaceY = ctf0.position.y;
         if (m_terrainHeights.trySampleHeight(ctf0.position.x, ctf0.position.z, surfaceY)) {
             // Match PhysicsSystem::resolveGround (feet at surfaceY + kTerrainFootClearance).
@@ -792,7 +814,9 @@ void SuperHero::onUpdate(double dt)
             *m_registry,
             pp,
             &m_terrainHeights,
-            m_terrainMap.loaded ? &m_terrainMap : nullptr);
+            m_terrainMap.loaded ? &m_terrainMap : nullptr,
+            m_assetManager,
+            static_cast<IGraphicsRenderer*>(m_renderer));
     }
     m_physicsSys.terrainHeightField = &m_terrainHeights;
 

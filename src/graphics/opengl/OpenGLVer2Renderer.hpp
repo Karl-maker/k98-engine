@@ -21,6 +21,7 @@
 #include <vector>
 
 struct GLFWwindow;
+struct StaticMeshMaterialOverrideComponent;
 class ModelAsset;
 class AssetManager;
 
@@ -73,7 +74,8 @@ private:
         const Mat4& tmO,
         const Mat4& model,
         const std::string& assetCacheKey,
-        const Vec3& cameraWorld);
+        const Vec3& cameraWorld,
+        Entity meshEntity = INVALID_ENTITY);
     void drawTexturedSkinnedModel(
         Registry& registry,
         const Mat4& pvShifted,
@@ -81,7 +83,8 @@ private:
         const Mat4& model,
         const std::string& assetCacheKey,
         const std::vector<Mat4>& jointSkinMatrices,
-        const Vec3& cameraWorld);
+        const Vec3& cameraWorld,
+        Entity meshEntity = INVALID_ENTITY);
 
     void applyTexturedSceneLighting(unsigned int program, Registry& registry, const Vec3& cameraWorld);
     void applyHdriUniforms(unsigned int program, Registry& registry);
@@ -125,6 +128,19 @@ private:
         bool skinned = false;
     };
 
+    void resolveStaticMeshPartTextures(
+        const StaticMeshPart& part,
+        const StaticMeshMaterialOverrideComponent* ov,
+        unsigned int& outAlb,
+        unsigned int& outN,
+        unsigned int& outOcc,
+        unsigned int& outMr,
+        bool& outUseN,
+        bool& outUseOcc,
+        bool& outUseMr);
+    unsigned int cachedOverrideTexture(const std::string& path, bool srgb);
+    void releaseOverrideTextureCache();
+
     GLFWwindow* m_window = nullptr;
     int m_fbW = 1280;
     int m_fbH = 720;
@@ -143,6 +159,8 @@ private:
     unsigned int m_lineVbo = 0;
 
     std::unordered_map<std::string, std::vector<StaticMeshPart>> m_gpuMeshByAssetKey;
+    /// Path → GL texture (keyed with s:/l: prefix for sRGB vs linear).
+    std::unordered_map<std::string, unsigned int> m_overrideTextureCache;
 
     unsigned int m_hdriTexture = 0;
     std::string m_hdriLoadedPath;

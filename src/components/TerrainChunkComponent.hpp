@@ -8,4 +8,7 @@ struct TerrainChunkComponent {
     int chunkZ;
 
     bool generated = false;
+
+    /// When true, `OpenGLVer2Renderer` skips the procedural heightmap mesh; use `RenderableMeshComponent` (glTF tile) instead.
+    bool skipProceduralTerrainGpuMesh = false;
 };
