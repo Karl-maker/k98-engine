@@ -42,7 +42,7 @@ public:
         float viewScore = isLikelyVisible(objectWorldCenter, cameraForward) ? 1.0f : 0.25f;
         float priority = scoreForDistance(dist) * viewScore;
 
-        std::shared_ptr<IAsset> cached = m_assets.load(path);
+        std::shared_ptr<IAsset> cached = m_assets.loadSharedAsync(path).get();
         auto cast = std::dynamic_pointer_cast<T>(cached);
         if (!cast)
             return nullptr;

@@ -1267,7 +1267,7 @@ bool OpenGLVer2Renderer::uploadStaticModelFromPath(
     const std::string& assetCacheKey,
     bool releaseCpuMeshAfterUpload)
 {
-    std::shared_ptr<IAsset> a = assets.load(path);
+    std::shared_ptr<IAsset> a = assets.loadSharedAsync(path).get();
     auto model = std::dynamic_pointer_cast<ModelAsset>(a);
     if (!model || model->meshes.empty())
         return false;

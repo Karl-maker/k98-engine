@@ -26,4 +26,18 @@ bool loadSpawnCatalogForGridCell(
     float gridStrideWorld,
     SpawnCatalogData& out);
 
+/// Merges spawn entries from `(centerGx + dx, centerGz + dz)` for all `dx,dz` in `[-neighborRadius, neighborRadius]`.
+/// The center cell is merged first (its `worldSeed` wins). Duplicate `id`s from neighbor files are skipped so
+/// spawns in adjacent chunk catalogs are visible while the player stands in a neighboring cell.
+/// Returns false if any existing catalog file fails to parse.
+bool loadSpawnCatalogMergedNeighborhood(
+    const char* const* searchRoots,
+    std::size_t numSearchRoots,
+    const std::string& baseName,
+    int centerGx,
+    int centerGz,
+    float gridStrideWorld,
+    int neighborRadius,
+    SpawnCatalogData& out);
+
 } // namespace spawn

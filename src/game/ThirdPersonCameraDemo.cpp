@@ -559,7 +559,7 @@ private:
         auto tryLoad = [this](const std::string& path) -> bool {
             if (path.empty())
                 return false;
-            std::shared_ptr<IAsset> asset = m_assetManager.load(path);
+            std::shared_ptr<IAsset> asset = m_assetManager.loadSharedAsync(path).get();
             if (!asset)
                 return false;
             auto model = std::dynamic_pointer_cast<ModelAsset>(asset);

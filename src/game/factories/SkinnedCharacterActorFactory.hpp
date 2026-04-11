@@ -67,7 +67,7 @@ struct SkinnedCharacterActorFactory {
         auto tryPath = [&](const std::string& path) -> std::shared_ptr<ModelAsset> {
             if (path.empty())
                 return nullptr;
-            std::shared_ptr<IAsset> asset = assets.load(path);
+            std::shared_ptr<IAsset> asset = assets.loadSharedAsync(path).get();
             if (!asset)
                 return nullptr;
             auto model = std::dynamic_pointer_cast<ModelAsset>(asset);

@@ -65,6 +65,9 @@ public:
     /// Same glTF path the player uses — passed to `SpawnContext` so enemies can use `spawnBusinessManCharacter`.
     void setSharedCharacterGltfPath(std::string path) { m_sharedCharacterGltfPath = std::move(path); }
 
+    /// Grid cells around the player to merge spawn JSONs: `1` = 3×3 (center + 8 neighbors), `2` = 5×5, etc.
+    void setCatalogNeighborRadius(int r) { m_catalogNeighborRadius = std::max(0, r); }
+
     /// How many queued spawn entries to resolve per frame (main thread). ECS/registry work cannot run on a worker thread.
     void setMaxSpawnsPerFrame(int n) { m_streaming.maxSpawnsPerFrame = std::max(1, n); }
 
@@ -126,13 +129,14 @@ private:
     void loadCatalogForCell(int gx, int gz, float stride)
     {
         /// Do not destroy spawned entities here — only `SpawnStreamingSystem` removes them when player exceeds `despawnRadius` from live positions.
-        if (!spawn::loadSpawnCatalogForGridCell(
+        if (!spawn::loadSpawnCatalogMergedNeighborhood(
                 kDefaultSearchRoots,
                 sizeof(kDefaultSearchRoots) / sizeof(kDefaultSearchRoots[0]),
                 m_catalogBaseName,
                 gx,
                 gz,
                 stride,
+                m_catalogNeighborRadius,
                 m_catalog))
             m_catalog = {};
     }
@@ -174,4 +178,7 @@ private:
     int m_pendingGx = 0;
     int m_pendingGz = 0;
     float m_cellHoldTimer = 0.f;
+
+    /// Merge catalog JSON from neighboring terrain cells so spawns just across a chunk boundary are evaluated.
+    int m_catalogNeighborRadius = 1;
 };

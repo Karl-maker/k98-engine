@@ -43,7 +43,7 @@ bool AudioSystem::init()
 void AudioSystem::shutdown()
 {
     shutdownAllVoices();
-    m_cache.clear();
+    // Clip cache worker drains in ~AudioClipCache; avoid racing clear() while the worker may still complete a decode.
     m_engine.shutdown();
 }
 
@@ -80,7 +80,9 @@ void AudioSystem::update(Registry& registry)
             continue;
         }
 
-        std::shared_ptr<CachedAudioBuffer> clip = m_cache.getOrLoad(resolved);
+        m_cache.requestDecode(resolved);
+        m_cache.pollDecodeProgress();
+        std::shared_ptr<CachedAudioBuffer> clip = m_cache.tryGetCached(resolved);
         if (!clip || !clip->valid)
             continue;
 

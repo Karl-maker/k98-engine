@@ -73,7 +73,7 @@ private:
                 PendingModelLoad pending;
                 pending.streamableEntity = e;
                 auto loadTask = [this, path = sm.modelPath]() {
-                    return std::static_pointer_cast<ModelAsset>(m_assets.load(path));
+                    return std::static_pointer_cast<ModelAsset>(m_assets.loadSharedAsync(path).get());
                 };
                 if (m_threads && m_threads->isRunning()) {
                     pending.future = m_threads->submit(std::move(loadTask));

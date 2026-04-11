@@ -3,6 +3,7 @@
 #include <cmath>
 #include <fstream>
 #include <iostream>
+#include <unordered_set>
 
 namespace spawn {
 
@@ -198,6 +199,67 @@ bool loadSpawnCatalogForGridCell(
         return false;
     }
     return loadSpawnCatalogFromParsedRoot(root, gx, gz, gridStrideWorld, true, out);
+}
+
+bool loadSpawnCatalogMergedNeighborhood(
+    const char* const* searchRoots,
+    std::size_t numSearchRoots,
+    const std::string& baseName,
+    int centerGx,
+    int centerGz,
+    float gridStrideWorld,
+    int neighborRadius,
+    SpawnCatalogData& out)
+{
+    out = SpawnCatalogData{};
+    if (neighborRadius < 0)
+        neighborRadius = 0;
+
+    std::unordered_set<std::string> seenIds;
+    seenIds.reserve(256);
+
+    auto mergeCell = [&](int gx, int gz, bool isCenter) -> bool {
+        SpawnCatalogData cell{};
+        if (!loadSpawnCatalogForGridCell(searchRoots, numSearchRoots, baseName, gx, gz, gridStrideWorld, cell))
+            return false;
+
+        if (isCenter) {
+            out.worldSeed = cell.worldSeed;
+            out.version = cell.version;
+        } else if (out.worldSeed == 0 && cell.worldSeed != 0) {
+            out.worldSeed = cell.worldSeed;
+            out.version = cell.version;
+        }
+
+        if (cell.spawns.empty())
+            return true;
+
+        for (SpawnEntryDesc& e : cell.spawns) {
+            if (seenIds.count(e.id) != 0) {
+                std::cerr << "SpawnCatalog: duplicate id \"" << e.id << "\" in merged neighborhood; skipping copy from cell ("
+                          << gx << "," << gz << ")\n";
+                continue;
+            }
+            seenIds.insert(e.id);
+            out.spawns.push_back(std::move(e));
+        }
+        return true;
+    };
+
+    if (!mergeCell(centerGx, centerGz, true))
+        return false;
+
+    for (int dz = -neighborRadius; dz <= neighborRadius; ++dz) {
+        for (int dx = -neighborRadius; dx <= neighborRadius; ++dx) {
+            if (dx == 0 && dz == 0)
+                continue;
+            const int gx = centerGx + dx;
+            const int gz = centerGz + dz;
+            if (!mergeCell(gx, gz, false))
+                return false;
+        }
+    }
+    return true;
 }
 
 } // namespace spawn

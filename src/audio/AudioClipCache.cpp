@@ -1,6 +1,5 @@
 #include "AudioClipCache.hpp"
 
-#include <future>
 #include <iostream>
 #include <vector>
 
@@ -55,32 +54,81 @@ static std::shared_ptr<CachedAudioBuffer> decodeFileToBufferImpl(const std::stri
     return out;
 }
 
-std::shared_ptr<CachedAudioBuffer> AudioClipCache::getOrLoad(const std::string& resolvedPath)
+AudioClipCache::AudioClipCache()
 {
-    {
-        std::lock_guard<std::mutex> lock(m_mutex);
-        auto it = m_cache.find(resolvedPath);
-        if (it != m_cache.end())
-            return it->second;
+    m_worker = std::thread([this] { workerLoop(); });
+}
+
+AudioClipCache::~AudioClipCache()
+{
+    m_stop.store(true, std::memory_order_release);
+    m_cv.notify_all();
+    if (m_worker.joinable())
+        m_worker.join();
+}
+
+void AudioClipCache::workerLoop()
+{
+    for (;;) {
+        std::string path;
+        {
+            std::unique_lock<std::mutex> lock(m_mutex);
+            m_cv.wait(lock, [&] { return m_stop.load(std::memory_order_acquire) || !m_queue.empty(); });
+            if (m_stop.load(std::memory_order_acquire) && m_queue.empty())
+                return;
+            if (m_queue.empty())
+                continue;
+            path = std::move(m_queue.front());
+            m_queue.pop();
+        }
+
+        std::shared_ptr<CachedAudioBuffer> decoded = decodeFileToBufferImpl(path);
+
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_inQueueOrDecoding.erase(path);
+            if (decoded && decoded->valid)
+                m_cache[path] = std::move(decoded);
+            else
+                m_decodeFailed.insert(path);
+        }
     }
+}
 
-    std::shared_ptr<CachedAudioBuffer> decoded = std::async(std::launch::async, [resolvedPath]() {
-        return decodeFileToBufferImpl(resolvedPath);
-    }).get();
+void AudioClipCache::requestDecode(const std::string& resolvedPath)
+{
+    if (resolvedPath.empty())
+        return;
+    std::lock_guard<std::mutex> lock(m_mutex);
+    if (m_cache.count(resolvedPath) || m_decodeFailed.count(resolvedPath))
+        return;
+    if (m_inQueueOrDecoding.count(resolvedPath))
+        return;
+    m_inQueueOrDecoding.insert(resolvedPath);
+    m_queue.push(resolvedPath);
+    m_cv.notify_one();
+}
 
-    if (!decoded)
-        return nullptr;
+void AudioClipCache::pollDecodeProgress()
+{
+    // Completes are applied in worker; optional hook for future metrics.
+}
 
+std::shared_ptr<CachedAudioBuffer> AudioClipCache::tryGetCached(const std::string& resolvedPath)
+{
     std::lock_guard<std::mutex> lock(m_mutex);
     auto it = m_cache.find(resolvedPath);
-    if (it != m_cache.end())
-        return it->second;
-    m_cache[resolvedPath] = decoded;
-    return decoded;
+    if (it == m_cache.end())
+        return nullptr;
+    return it->second;
 }
 
 void AudioClipCache::clear()
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     m_cache.clear();
+    m_inQueueOrDecoding.clear();
+    m_decodeFailed.clear();
+    while (!m_queue.empty())
+        m_queue.pop();
 }

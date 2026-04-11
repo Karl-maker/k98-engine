@@ -79,7 +79,7 @@ inline BusinessManSceneHandles spawnBusinessManScene(
 {
     BusinessManSceneHandles out;
     std::string path = gltfPath.empty() ? defaultManGltfPath() : gltfPath;
-    std::shared_ptr<IAsset> a = assets.load(path);
+    std::shared_ptr<IAsset> a = assets.loadSharedAsync(path).get();
     auto model = std::dynamic_pointer_cast<ModelAsset>(a);
     if (!model || model->meshes.empty()) {
         return out;
@@ -205,7 +205,7 @@ inline Entity spawnBusinessManCharacter(
     bool addPlayerTag,
     uint32_t collisionCategoryBits = CollisionLayer::Player)
 {
-    std::shared_ptr<IAsset> a = assets.load(gltfPath);
+    std::shared_ptr<IAsset> a = assets.loadSharedAsync(gltfPath).get();
     auto model = std::dynamic_pointer_cast<ModelAsset>(a);
     if (!model || model->meshes.empty())
         return INVALID_ENTITY;
