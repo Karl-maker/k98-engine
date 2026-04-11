@@ -194,6 +194,7 @@ inline BusinessManSceneHandles spawnBusinessManScene(
 }
 
 /// Extra rigged character using the same glTF path and GPU cache key as `spawnBusinessManScene` (upload may be a no-op if already uploaded).
+/// `collisionCategoryBits` — use `CollisionLayer::Default` for NPCs/enemies so they are not tagged as the player capsule.
 inline Entity spawnBusinessManCharacter(
     Registry& registry,
     IGraphicsRenderer& renderer,
@@ -201,7 +202,8 @@ inline Entity spawnBusinessManCharacter(
     const std::string& gltfPath,
     const Vec3& position,
     float yawRadians,
-    bool addPlayerTag)
+    bool addPlayerTag,
+    uint32_t collisionCategoryBits = CollisionLayer::Player)
 {
     std::shared_ptr<IAsset> a = assets.load(gltfPath);
     auto model = std::dynamic_pointer_cast<ModelAsset>(a);
@@ -271,7 +273,7 @@ inline Entity spawnBusinessManCharacter(
     registry.addComponent(character, cap);
 
     ColliderFilterComponent layers{};
-    layers.categoryBits = CollisionLayer::Player;
+    layers.categoryBits = collisionCategoryBits;
     layers.collideMask = 0xFFFFFFFFu;
     registry.addComponent(character, layers);
 

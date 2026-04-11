@@ -9,6 +9,7 @@
 #include "../core/assets/importers/GltfModelImporter.hpp"
 #include "../ecs/Registry.hpp"
 #include "../graphics/IGraphicsRenderer.hpp"
+#include "domain/spawn/SpawnCatalogSourceComponent.hpp"
 #include "../graphics/opengl/OpenGLVer2Renderer.hpp"
 #include "../graphics/GraphicsTypes.hpp"
 #include "../game/factories/BusinessManSceneFactory.hpp"
@@ -22,6 +23,8 @@
 #include "../components/ThirdPersonComponent.hpp"
 #include "../components/EntityAttachmentComponent.hpp"
 #include "../components/GpuSkinPaletteComponent.hpp"
+#include "../components/PoseComponent.hpp"
+#include "../components/SkeletonComponent.hpp"
 #include "../components/HdriEnvironmentComponent.hpp"
 #include "../components/HeightMapComponent.hpp"
 #include "../components/LightingComponent.hpp"
@@ -35,7 +38,6 @@
 #include "../components/PlayerTagComponent.hpp"
 #include "../components/RigidBodyComponent.hpp"
 #include "../components/SphereColliderComponent.hpp"
-#include "../components/PoseComponent.hpp"
 #include "../components/PrimitiveBoxComponent.hpp"
 #include "../components/PrimitivePyramidComponent.hpp"
 #include "../components/RenderableMeshComponent.hpp"
@@ -53,7 +55,6 @@
 #include "../components/GameSessionComponent.hpp"
 #include "../components/HealthComponent.hpp"
 #include "../components/ThirdPersonOrbitInputStateComponent.hpp"
-#include "../components/SkeletonComponent.hpp"
 #include "../components/TransformComponent.hpp"
 #include "../components/WorldTransformComponent.hpp"
 
@@ -123,6 +124,14 @@ float rightHandAimCycleWeight(float cycleTimeSec)
 }
 
 } // namespace
+
+/// Example: register only the archetypes used by this game's `domain/spawns/catalog_(gx,gz).json` files.
+static void registerSuperHeroSpawnFactories(SpawnCatalogGridSystem& grid)
+{
+    spawn::SpawnFactoryRegistry& reg = grid.factories();
+    reg.registerArchetype("prop", std::make_unique<spawn::PropSpawnFactory>());
+    reg.registerArchetype("enemy", std::make_unique<spawn::EnemySpawnFactory>());
+}
 
 static GameSessionComponent* tryGameSession(Registry* registry, Entity sessionEntity)
 {
@@ -220,6 +229,7 @@ void SuperHero::registerComponents()
     m_registry->registerComponent<CharacterPresentationStateComponent>();
     m_registry->registerComponent<ThirdPersonOrbitInputStateComponent>();
     m_registry->registerComponent<AudioHotkeyEdgeComponent>();
+    m_registry->registerComponent<SpawnCatalogSourceComponent>();
 }
 
 void SuperHero::updateRightArmAim()
@@ -552,6 +562,8 @@ void SuperHero::onStart()
         // tiles.normalPathFormat = "assets/terrain/pieces/chunk_%d_%d_normal.png";
         // m_registry->addComponent(terrainSettingsEntity, tiles);
         m_registry->addComponent(terrainSettingsEntity, ts);
+        m_terrainChunkSize = ts.chunkSize;
+        m_terrainScale = ts.scale;
 
         auto& ctf0 = m_registry->getComponent<TransformComponent>(m_character);
         m_terrainChunks.update(
@@ -617,122 +629,6 @@ void SuperHero::onStart()
         m_registry->addComponent(m_character, sfx);
     }
 
-    m_aiChaser = game::factories::spawnBusinessManCharacter(
-        *m_registry, *m_renderer, *m_assetManager, scene.assetCacheKey, {5.f, 2.f, -3.f}, 0.f, false);
-    if (m_aiChaser != INVALID_ENTITY) {
-        MovementComponent chaseMove{};
-        chaseMove.runSpeed = 2.35f;
-        chaseMove.walkSpeed = 1.6f;
-        chaseMove.sprintSpeed = 2.8f;
-        chaseMove.acceleration = 14.f;
-        m_registry->addComponent(m_aiChaser, chaseMove);
-        m_registry->addComponent(m_aiChaser, ChaseComponent{m_character});
-
-        auto& aiTf = m_registry->getComponent<TransformComponent>(m_aiChaser);
-        float aiY = aiTf.position.y;
-        if (m_terrainHeights.trySampleHeight(aiTf.position.x, aiTf.position.z, aiY)) {
-            aiTf.position.y = aiY + kTerrainFootClearance - game::factories::kManCapsuleOffsetY +
-                game::factories::kManCapsuleHalfHeight + game::factories::kManCapsuleRadius;
-        }
-
-        HurtboxComponent aiHurt{};
-        aiHurt.owner = m_aiChaser;
-        aiHurt.shape = CombatShape::Capsule;
-        aiHurt.radius = game::factories::kManHurtboxRadius;
-        aiHurt.capsuleHalfHeight = game::factories::kManHurtboxHalfHeight;
-        aiHurt.offset = {0.f, game::factories::kManCapsuleOffsetY, 0.f};
-        aiHurt.layerBits = 1u << 1;
-        m_registry->addComponent(m_aiChaser, aiHurt);
-    }
-
-    // Dynamic prop boxes along the same world direction as the head ray (local +Z → character rotation).
-    // `PrimitiveBoxComponent` draws them; place in front of the player so the camera sees them.
-    constexpr float propBoxHalfY = 0.18f;
-    constexpr float gapAboveHead = 0.08f;
-    constexpr float playerSpawnY = 2.f;
-    constexpr float capTop = playerSpawnY + game::factories::kManCapsuleOffsetY + game::factories::kManCapsuleHalfHeight +
-        game::factories::kManCapsuleRadius;
-    const float propBoxCenterY = capTop + gapAboveHead + propBoxHalfY;
-    const auto& charTf0 = m_registry->getComponent<TransformComponent>(m_character);
-    const Vec3 rayLocal{0.f, 0.f, 1.f};
-    Vec3 worldRayDir = Mat4::transformDirection(Mat4::FromQuat(charTf0.rotation), rayLocal);
-    worldRayDir = normalize(worldRayDir);
-    const Vec3 rayAnchor{charTf0.position.x, propBoxCenterY, charTf0.position.z};
-    const Vec3 propPos1{
-        rayAnchor.x + worldRayDir.x * 2.5f,
-        rayAnchor.y + worldRayDir.y * 2.5f,
-        rayAnchor.z + worldRayDir.z * 2.5f};
-    const Vec3 propPos2{
-        rayAnchor.x + worldRayDir.x * 5.0f,
-        rayAnchor.y + worldRayDir.y * 5.0f,
-        rayAnchor.z + worldRayDir.z * 5.0f};
-
-    m_headBox = m_registry->createEntity();
-    m_registry->addComponent(m_headBox, TransformComponent{});
-    m_registry->addComponent(m_headBox, WorldTransformComponent{});
-    {
-        auto& htf = m_registry->getComponent<TransformComponent>(m_headBox);
-        htf.position = propPos1;
-        htf.rotation = {0.f, 0.f, 0.f, 1.f};
-
-        RigidBodyComponent headRb{};
-        headRb.mass = 1.f;
-        headRb.invMass = 1.f;
-        headRb.linearDamping = 4.5f;
-        headRb.friction = 0.88f;
-        m_registry->addComponent(m_headBox, headRb);
-
-        BoxColliderComponent headCol{};
-        headCol.halfExtents = {0.42f, propBoxHalfY, 0.42f};
-        headCol.offset = {0.f, 0.f, 0.f};
-        m_registry->addComponent(m_headBox, headCol);
-
-        ColliderFilterComponent headPropLayers{};
-        headPropLayers.categoryBits = CollisionLayer::Prop;
-        headPropLayers.collideMask = 0xFFFFFFFFu;
-        m_registry->addComponent(m_headBox, headPropLayers);
-
-        PrimitiveBoxComponent headVis{};
-        headVis.halfExtents = headCol.halfExtents;
-        headVis.color[0] = 0.92f;
-        headVis.color[1] = 0.62f;
-        headVis.color[2] = 0.18f;
-        m_registry->addComponent(m_headBox, headVis);
-    }
-
-    m_headBox2 = m_registry->createEntity();
-    m_registry->addComponent(m_headBox2, TransformComponent{});
-    m_registry->addComponent(m_headBox2, WorldTransformComponent{});
-    {
-        auto& htf = m_registry->getComponent<TransformComponent>(m_headBox2);
-        htf.position = propPos2;
-        htf.rotation = {0.f, 0.f, 0.f, 1.f};
-
-        RigidBodyComponent headRb{};
-        headRb.mass = 1.f;
-        headRb.invMass = 1.f;
-        headRb.linearDamping = 4.5f;
-        headRb.friction = 0.88f;
-        m_registry->addComponent(m_headBox2, headRb);
-
-        BoxColliderComponent headCol{};
-        headCol.halfExtents = {0.42f, propBoxHalfY, 0.42f};
-        headCol.offset = {0.f, 0.f, 0.f};
-        m_registry->addComponent(m_headBox2, headCol);
-
-        ColliderFilterComponent head2PropLayers{};
-        head2PropLayers.categoryBits = CollisionLayer::Prop;
-        head2PropLayers.collideMask = 0xFFFFFFFFu;
-        m_registry->addComponent(m_headBox2, head2PropLayers);
-
-        PrimitiveBoxComponent headVis{};
-        headVis.halfExtents = headCol.halfExtents;
-        headVis.color[0] = 0.95f;
-        headVis.color[1] = 0.45f;
-        headVis.color[2] = 0.15f;
-        m_registry->addComponent(m_headBox2, headVis);
-    }
-
     if (m_registry->hasComponent<SkeletonComponent>(m_character)) {
         auto& sk = m_registry->getComponent<SkeletonComponent>(m_character);
         const int headBi = findBoneIndexByNameSubstring(sk, "Head");
@@ -765,6 +661,13 @@ void SuperHero::onStart()
     WorldTransformSyncSystem worldSnap;
     worldSnap.update(*m_registry);
     updateThirdPersonCamera(0.f);
+
+    registerSuperHeroSpawnFactories(m_spawnGrid);
+    m_spawnGrid.setServices(m_registry, m_assetManager, static_cast<IGraphicsRenderer*>(m_renderer), &m_terrainHeights);
+    m_spawnGrid.setPlayerEntity(m_character);
+    m_spawnGrid.setTerrainGrid(m_terrainChunkSize, m_terrainScale);
+    m_spawnGrid.setSharedCharacterGltfPath(scene.assetCacheKey);
+    m_spawnGrid.update(0.f);
 }
 
 void SuperHero::onInput()
@@ -817,6 +720,7 @@ void SuperHero::onUpdate(double dt)
             m_terrainMap.loaded ? &m_terrainMap : nullptr,
             m_assetManager,
             static_cast<IGraphicsRenderer*>(m_renderer));
+        m_spawnGrid.update(fdt);
     }
     m_physicsSys.terrainHeightField = &m_terrainHeights;
 
@@ -833,10 +737,9 @@ void SuperHero::onUpdate(double dt)
     constexpr float kAiContactDamage = 12.f;
     constexpr float kAiContactMinSpeed = 0.55f;
     constexpr float kAiContactCooldown = 0.75f;
-    m_contactDamage.update(
+    m_contactDamage.updateForChasingAis(
         *m_registry,
         m_character,
-        m_aiChaser,
         fdt,
         kAiContactDamage,
         kAiContactMinSpeed,
@@ -855,10 +758,8 @@ void SuperHero::onUpdate(double dt)
 
     poseSys.update(*m_registry);
 
-    if (m_character != INVALID_ENTITY)
-        game::factories::updateCharacterSkinPalette(*m_registry, m_character);
-    if (m_aiChaser != INVALID_ENTITY)
-        game::factories::updateCharacterSkinPalette(*m_registry, m_aiChaser);
+    for (Entity rig : m_registry->getEntitiesWith<SkeletonComponent, PoseComponent, GpuSkinPaletteComponent>())
+        game::factories::updateCharacterSkinPalette(*m_registry, rig);
 
     BoneAttachmentSystem attachSys;
     attachSys.update(*m_registry);

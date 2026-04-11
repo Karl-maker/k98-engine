@@ -15,6 +15,7 @@
 #include "systems/PlayerAiContactDamageSystem.hpp"
 #include "systems/MovementSystem.hpp"
 #include "systems/PlayerControllerSystem.hpp"
+#include "../systems/SpawnCatalogGridSystem.hpp"
 
 class Registry;
 class AssetManager;
@@ -58,12 +59,8 @@ private:
     Entity m_character = INVALID_ENTITY;
     Entity m_hat = INVALID_ENTITY;
     Entity m_camera = INVALID_ENTITY;
-    /// Small dynamic box spawned above the player; rests on the capsule via physics.
-    Entity m_headBox = INVALID_ENTITY;
-    Entity m_headBox2 = INVALID_ENTITY;
     /// Bone-attached line-of-sight ray (e.g. head forward).
     Entity m_headRay = INVALID_ENTITY;
-    Entity m_aiChaser = INVALID_ENTITY;
 
     PlayerControllerSystem m_playerController{};
     AIControllerSystem m_aiController{};
@@ -77,4 +74,9 @@ private:
     TerrainChunkSystem m_terrainChunks{};
     TerrainHeightField m_terrainHeights{};
     TerrainWorldMap m_terrainMap{};
+
+    int m_terrainChunkSize = 32;
+    float m_terrainScale = 1.f;
+
+    SpawnCatalogGridSystem m_spawnGrid{};
 };

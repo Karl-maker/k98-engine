@@ -36,7 +36,13 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(googletest)
 
 FetchContent_Declare(
-  tinygltf
+    json
+    URL https://github.com/nlohmann/json/releases/download/v3.11.3/json.tar.xz
+)
+FetchContent_MakeAvailable(json)
+
+FetchContent_Declare(
+    tinygltf
   GIT_REPOSITORY https://github.com/syoyo/tinygltf.git
   GIT_TAG v2.9.3
 )
@@ -78,6 +84,7 @@ add_executable(game_engine
   src/utils/math.cpp
   src/core/ThreadService.cpp
   src/core/GameLoop.cpp
+  src/domain/spawn/SpawnCatalog.cpp
   src/statemachine/StateMachine.cpp
   src/core/assets/importers/GltfModelImporter.cpp
   src/core/assets/importers/AudioImporter.cpp
@@ -101,9 +108,9 @@ if(NOT APPLE)
   target_sources(game_engine PRIVATE ${glew_SOURCE_DIR}/src/glew.c)
   target_compile_definitions(game_engine PRIVATE GLEW_STATIC)
   find_package(OpenGL REQUIRED)
-  target_link_libraries(game_engine PRIVATE Threads::Threads glfw OpenGL::GL webp ${CMAKE_DL_LIBS})
+  target_link_libraries(game_engine PRIVATE Threads::Threads glfw OpenGL::GL webp nlohmann_json::nlohmann_json ${CMAKE_DL_LIBS})
 else()
-  target_link_libraries(game_engine PRIVATE Threads::Threads glfw webp "-framework OpenGL")
+  target_link_libraries(game_engine PRIVATE Threads::Threads glfw webp nlohmann_json::nlohmann_json "-framework OpenGL")
 endif()
 
 # Tests

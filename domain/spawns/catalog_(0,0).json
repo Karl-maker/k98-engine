@@ -1,0 +1,128 @@
+{
+  "version": 1,
+  "worldSeed": 1,
+  "spawns": [
+    {
+      "id": "cell_prop_a",
+      "archetype": "prop",
+      "localPosition": { "x": 9.0, "y": 0.5, "z": 9.0 },
+      "spawnProbability": 1.0,
+      "spawnRadius": 220.0,
+      "despawnRadius": 400.0,
+      "attributes": {
+        "boxHalfX": 0.42,
+        "boxHalfY": 0.18,
+        "boxHalfZ": 0.42
+      }
+    },
+    {
+      "id": "cell_prop_4",
+      "archetype": "prop",
+      "localPosition": { "x": 15.0, "y": 0.5, "z": 8.0 },
+      "spawnProbability": 1.0,
+      "spawnRadius": 30.0,
+      "despawnRadius": 10.0,
+      "attributes": {
+        "boxHalfX": 0.42,
+        "boxHalfY": 0.18,
+        "boxHalfZ": 0.42
+      }
+    },
+    {
+      "id": "cell_enemy_5",
+      "archetype": "enemy",
+      "localPosition": { "x": 25.0, "y": 0.5, "z": 10.0 },
+      "spawnProbability": 1.0,
+      "spawnRadius": 30.0,
+      "despawnRadius": 10.0,
+      "attributes": {
+        "yawDegrees": 35,
+        "walkSpeed": 2.8,
+        "runSpeed": 3.2,
+        "sprintSpeed": 4.0,
+        "acceleration": 14.0,
+        "health": 80
+      }
+    },
+    {
+      "id": "cell_enemy_6",
+      "archetype": "enemy",
+      "localPosition": { "x": 19.5, "y": 0.5, "z": 10.0 },
+      "spawnProbability": 1.0,
+      "spawnRadius": 30.0,
+      "despawnRadius": 30.0,
+      "attributes": {
+        "yawDegrees": -20,
+        "walkSpeed": 1.8,
+        "runSpeed": 3.2,
+        "sprintSpeed": 4.0,
+        "acceleration": 14.0,
+        "health": 80
+      }
+    },
+    {
+      "id": "cell_enemy_3",
+      "archetype": "enemy",
+      "localPosition": { "x": 28.5, "y": 0.5, "z": 11.5 },
+      "spawnProbability": 1.0,
+      "spawnRadius": 30.0,
+      "despawnRadius": 10.0,
+      "attributes": {
+        "yawDegrees": 110,
+        "walkSpeed": 1.8,
+        "runSpeed": 3.2,
+        "sprintSpeed": 4.0,
+        "acceleration": 14.0,
+        "health": 80
+      }
+    },
+    {
+      "id": "cell_enemy_1",
+      "archetype": "enemy",
+      "localPosition": { "x": 20.0, "y": 0.5, "z": 10.0 },
+      "spawnProbability": 1.0,
+      "spawnRadius": 30.0,
+      "despawnRadius": 10.0,
+      "attributes": {
+        "yawDegrees": 35,
+        "walkSpeed": 1.8,
+        "runSpeed": 3.2,
+        "sprintSpeed": 4.0,
+        "acceleration": 14.0,
+        "health": 80
+      }
+    },
+    {
+      "id": "cell_enemy_2",
+      "archetype": "enemy",
+      "localPosition": { "x": 29.5, "y": 0.5, "z": 10.0 },
+      "spawnProbability": 1.0,
+      "spawnRadius": 30.0,
+      "despawnRadius": 30.0,
+      "attributes": {
+        "yawDegrees": -20,
+        "walkSpeed": 1.8,
+        "runSpeed": 3.2,
+        "sprintSpeed": 4.0,
+        "acceleration": 14.0,
+        "health": 80
+      }
+    },
+    {
+      "id": "cell_enemy_3",
+      "archetype": "enemy",
+      "localPosition": { "x": 28.5, "y": 0.5, "z": 11.5 },
+      "spawnProbability": 1.0,
+      "spawnRadius": 30.0,
+      "despawnRadius": 10.0,
+      "attributes": {
+        "yawDegrees": 110,
+        "walkSpeed": 1.8,
+        "runSpeed": 3.2,
+        "sprintSpeed": 4.0,
+        "acceleration": 14.0,
+        "health": 80
+      }
+    }
+  ]
+}

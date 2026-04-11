@@ -1160,6 +1160,11 @@ bool OpenGLVer2Renderer::uploadStaticModel(const ModelAsset& model, const std::s
     if (assetCacheKey.empty() || model.meshes.empty() || !m_window)
         return false;
 
+    // Same glTF path is shared by multiple rigged entities (player + streamed enemies). Re-uploading would
+    // release and rebuild all VAOs/textures every spawn — visible hitch and redundant work.
+    if (m_gpuMeshByAssetKey.find(assetCacheKey) != m_gpuMeshByAssetKey.end())
+        return true;
+
     releaseGpuMeshesForKey(assetCacheKey);
 
     std::vector<StaticMeshPart> parts;
